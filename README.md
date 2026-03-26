@@ -23,39 +23,49 @@ It exists for people who want a simpler, more predictable local VM workflow than
 - `ssh` opens an interactive SSH session.
 - `exec` runs a remote command over SSH.
 
+## Install
+
+From a local checkout:
+
+```bash
+cargo install --path .
+```
+
+That installs the `hardpass` executable into Cargo's bin directory so the examples below can be run directly.
+
 ## Quick Start
 
 ```bash
-cargo run -- doctor
-cargo run -- create dev
-cargo run -- start dev
-cargo run -- list
-cargo run -- info dev
-cargo run -- ssh dev
-cargo run -- exec dev -- uname -a
-cargo run -- ssh-config install
-cargo run -- ssh-config sync
-cargo run -- stop dev
-cargo run -- delete dev
+hardpass doctor
+hardpass create dev
+hardpass start dev
+hardpass list
+hardpass info dev
+hardpass ssh dev
+hardpass exec dev -- uname -a
+hardpass ssh-config install
+hardpass ssh-config sync
+hardpass stop dev
+hardpass delete dev
 ```
 
 `create` defaults to Ubuntu `24.04` on the host-native guest architecture. You can override VM size and forwarding when needed:
 
 ```bash
-cargo run -- create test \
+hardpass create test \
   --release 24.04 \
   --cpus 4 \
   --memory-mib 4096 \
   --disk-gib 24 \
   --forward 8080:8080
 
-cargo run -- start test
+hardpass start test
 ```
 
 Use `info --json` when another tool needs machine-readable state:
 
 ```bash
-cargo run -- info dev --json
+hardpass info dev --json
 ```
 
 The JSON payload includes `ssh.alias`, so other tools can discover the SSH alias directly.
@@ -67,8 +77,8 @@ Hardpass stores state under `~/.hardpass` by default. Set `HARDPASS_HOME` if you
 Install the one-time include block, then sync the current VM aliases:
 
 ```bash
-cargo run -- ssh-config install
-cargo run -- ssh-config sync
+hardpass ssh-config install
+hardpass ssh-config sync
 ```
 
 Each VM name becomes an SSH alias with the stored loopback port and identity file:
