@@ -25,6 +25,20 @@ It exists for people who want a simpler, more predictable local VM workflow than
 
 ## Install
 
+From crates.io:
+
+```bash
+cargo install hardpass-vm
+```
+
+That installs the `hardpass` executable.
+
+From the GitHub repository:
+
+```bash
+cargo install --git https://github.com/peterdelevoryas/hardpass --bin hardpass
+```
+
 From a local checkout:
 
 ```bash

@@ -1,11 +1,23 @@
 [package]
-name = "hardpass"
-version = "0.1.0"
+name = "hardpass-vm"
+version = "0.1.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "A small, reliable Ubuntu cloud-image VM manager built on QEMU."
 readme = "README.md"
+repository = "https://github.com/peterdelevoryas/hardpass"
+homepage = "https://github.com/peterdelevoryas/hardpass"
+documentation = "https://docs.rs/hardpass-vm"
+keywords = ["qemu", "vm", "ubuntu", "cloud-init", "cli"]
 authors = ["Peter Delevoryas <peter@pjd.dev>"]
+
+[lib]
+name = "hardpass"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hardpass"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
