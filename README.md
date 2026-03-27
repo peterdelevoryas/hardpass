@@ -5,7 +5,7 @@
 It exists for people who want a simpler, more predictable local VM workflow than Multipass:
 - macOS and Linux hosts
 - Ubuntu guest images only
-- host-native guest architecture only
+- host-native guest architecture by default, with optional cross-architecture TCG emulation
 - QEMU user networking
 - stable per-VM SSH port forwarding
 
@@ -61,18 +61,20 @@ hp stop dev
 hp delete dev
 ```
 
-`create` defaults to Ubuntu `24.04` on the host-native guest architecture. You can override VM size and forwarding when needed:
+`create` defaults to Ubuntu `24.04` on the host-native guest architecture with `2` vCPUs, `8192` MiB RAM, and a `16` GiB disk. You can override VM size, acceleration, guest arch, and forwarding when needed:
 
 ```bash
 hp create test \
   --release 24.04 \
   --cpus 4 \
-  --memory-mib 4096 \
-  --disk-gib 24 \
+  --memory-mib 16384 \
+  --disk-gib 100 \
   --forward 8080:8080
 
 hp start test
 ```
+
+Use `--accel tcg` when you want slower emulated guests, including cross-architecture experiments such as `--arch amd64` on an arm64 host.
 
 If you want to warm the image cache before the first VM boot:
 
@@ -112,7 +114,7 @@ With the default `~/.hardpass` root, `hp create` and `hp delete` keep the alias 
 - `qemu-system-x86_64` or `qemu-system-aarch64`
 - `ssh`
 - `ssh-keygen`
-- Linux hosts need `/dev/kvm`; Hardpass does not fall back to TCG
+- Linux hosts need `/dev/kvm` for `--accel auto` or `--accel kvm`; `--accel tcg` is also supported but slower
 - AArch64 hosts also need discoverable UEFI firmware for QEMU
 
 Run `hp doctor` to confirm the local environment before creating a VM.

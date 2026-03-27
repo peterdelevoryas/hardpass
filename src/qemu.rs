@@ -51,7 +51,7 @@ fn resolve_accel_for_env(
         AccelMode::Hvf if os == "macos" => Ok(AccelMode::Hvf),
         AccelMode::Kvm if os == "linux" && linux_kvm_available => Ok(AccelMode::Kvm),
         AccelMode::Kvm if os == "linux" => bail!("{}", missing_kvm_error_message()),
-        AccelMode::Tcg => bail!("{}", tcg_disabled_error_message()),
+        AccelMode::Tcg => Ok(AccelMode::Tcg),
         other => bail!("acceleration mode {other} is not supported on this host"),
     }
 }
@@ -61,11 +61,7 @@ fn linux_kvm_available() -> bool {
 }
 
 fn missing_kvm_error_message() -> &'static str {
-    "Hardpass requires KVM acceleration on Linux, but /dev/kvm is unavailable on this host. Hardpass will not fall back to TCG; run on a KVM-enabled Linux host/runner or choose a different supported accel mode."
-}
-
-fn tcg_disabled_error_message() -> &'static str {
-    "TCG acceleration is disabled in Hardpass. Use KVM on Linux or HVF on macOS instead."
+    "Hardpass requires KVM acceleration on Linux for `--accel auto` or `--accel kvm`, but /dev/kvm is unavailable on this host. Run on a KVM-enabled Linux host/runner or choose `--accel tcg` for slower emulated guests."
 }
 
 pub fn discover_aarch64_firmware() -> Result<FirmwarePaths> {
@@ -364,7 +360,6 @@ mod tests {
     use super::{
         build_launch_spec_with_accel, discover_aarch64_firmware, launch_accel_attempts,
         missing_kvm_error_message, qemu_user_network_arg, resolve_accel, resolve_accel_for_env,
-        tcg_disabled_error_message,
     };
     use crate::state::{
         AccelMode, CloudInitConfig, GuestArch, ImageConfig, InstanceConfig, InstancePaths,
@@ -468,7 +463,7 @@ mod tests {
         let err = resolve_accel_for_env(AccelMode::Kvm, "linux", false).expect_err("should fail");
         assert_eq!(err.to_string(), missing_kvm_error_message());
         assert!(err.to_string().contains("/dev/kvm"));
-        assert!(err.to_string().contains("fall back to TCG"));
+        assert!(err.to_string().contains("--accel tcg"));
     }
 
     #[test]
@@ -478,9 +473,14 @@ mod tests {
     }
 
     #[test]
-    fn explicit_tcg_is_disabled() {
-        let err = resolve_accel_for_env(AccelMode::Tcg, "linux", true).expect_err("should fail");
-        assert_eq!(err.to_string(), tcg_disabled_error_message());
-        assert!(err.to_string().contains("TCG acceleration is disabled"));
+    fn explicit_tcg_is_supported() {
+        assert_eq!(
+            resolve_accel_for_env(AccelMode::Tcg, "linux", true).expect("tcg"),
+            AccelMode::Tcg
+        );
+        assert_eq!(
+            resolve_accel_for_env(AccelMode::Tcg, "macos", false).expect("tcg"),
+            AccelMode::Tcg
+        );
     }
 }

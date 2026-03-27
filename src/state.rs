@@ -10,9 +10,9 @@ use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
 const DEFAULT_RELEASE: &str = "24.04";
-const DEFAULT_CPU_COUNT: u8 = 4;
-const DEFAULT_MEMORY_MIB: u32 = 4096;
-const DEFAULT_DISK_GIB: u32 = 24;
+const DEFAULT_CPU_COUNT: u8 = 2;
+const DEFAULT_MEMORY_MIB: u32 = 8192;
+const DEFAULT_DISK_GIB: u32 = 16;
 const DEFAULT_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_SSH_USER: &str = "ubuntu";
 const DEFAULT_SSH_HOST: &str = "127.0.0.1";
@@ -486,6 +486,13 @@ mod tests {
         PortForward, SshConfig, atomic_write,
     };
     use crate::state::{AccelMode, GuestArch};
+
+    #[test]
+    fn instance_config_defaults_match_expected_vm_size() {
+        assert_eq!(InstanceConfig::default_cpus(), 2);
+        assert_eq!(InstanceConfig::default_memory_mib(), 8192);
+        assert_eq!(InstanceConfig::default_disk_gib(), 16);
+    }
 
     fn test_config(dir: &std::path::Path) -> InstanceConfig {
         InstanceConfig {

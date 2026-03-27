@@ -46,10 +46,10 @@ enum HostDependency {
 }
 
 impl HostDependency {
-    fn label(self, host_arch: GuestArch) -> String {
+    fn label(self, guest_arch: GuestArch) -> String {
         match self {
             Self::QemuImg => "qemu-img".to_string(),
-            Self::QemuSystem => host_arch.qemu_binary().to_string(),
+            Self::QemuSystem => guest_arch.qemu_binary().to_string(),
             Self::Ssh => "ssh".to_string(),
             Self::SshKeygen => "ssh-keygen".to_string(),
             Self::Aarch64Firmware => "aarch64-firmware".to_string(),
@@ -113,7 +113,7 @@ impl InstanceManager {
 
         if cfg!(target_os = "linux") && !Path::new("/dev/kvm").exists() {
             println!(
-                "warn  {:<20} /dev/kvm unavailable; hardpass requires KVM on Linux and will fail instead of falling back to TCG",
+                "warn  {:<20} /dev/kvm unavailable; `hp start` with auto/kvm will fail, but `--accel tcg` remains available for slower emulated guests",
                 "kvm"
             );
         }
@@ -249,9 +249,14 @@ impl InstanceManager {
         validate_name(&args.name)?;
         let paths = self.state.instance_paths(&args.name)?;
         let _lock = lock_file(paths.lock_path()).await?;
+        let host_arch = GuestArch::host_native()?;
+        let guest_arch = args.arch.unwrap_or(host_arch);
+        let accel = args.accel.unwrap_or(AccelMode::Auto);
+        validate_arch_accel_combo(host_arch, guest_arch, accel)?;
         match paths.status().await? {
             InstanceStatus::Missing => {
-                self.ensure_create_dependencies(allow_prompt).await?;
+                self.ensure_create_dependencies(guest_arch, allow_prompt)
+                    .await?;
                 let config = self.create_instance(&paths, &args).await?;
                 Ok(VmInfo::from_config(
                     &config,
@@ -285,8 +290,9 @@ impl InstanceManager {
     }
 
     pub(crate) async fn wait_for_ssh_ready(&self, name: &str) -> Result<VmInfo> {
-        self.ensure_start_dependencies(false, false).await?;
         let (paths, config) = self.running_instance(name).await?;
+        self.ensure_start_dependencies(config.arch, false, false)
+            .await?;
         wait_for_ssh(&config.ssh, config.timeout_secs).await?;
         Ok(VmInfo::from_config(&config, &paths, paths.status().await?))
     }
@@ -306,8 +312,9 @@ impl InstanceManager {
         name: &str,
         command: &[String],
     ) -> Result<SshExecOutput> {
-        self.ensure_start_dependencies(false, false).await?;
         let (_, config) = self.running_instance(name).await?;
+        self.ensure_start_dependencies(config.arch, false, false)
+            .await?;
         ssh_exec_capture(&config.ssh, command).await
     }
 
@@ -316,8 +323,9 @@ impl InstanceManager {
         name: &str,
         command: &[String],
     ) -> Result<SshExecOutput> {
-        self.ensure_start_dependencies(false, false).await?;
         let (_, config) = self.running_instance(name).await?;
+        self.ensure_start_dependencies(config.arch, false, false)
+            .await?;
         ssh_exec_checked(&config.ssh, command).await
     }
 
@@ -328,9 +336,8 @@ impl InstanceManager {
     ) -> Result<InstanceConfig> {
         let host_arch = GuestArch::host_native()?;
         let arch = args.arch.unwrap_or(host_arch);
-        if arch != host_arch {
-            bail!("v1 only supports host-native guest architecture ({host_arch})");
-        }
+        let accel = args.accel.unwrap_or(AccelMode::Auto);
+        validate_arch_accel_combo(host_arch, arch, accel)?;
         let ssh_key_path = self.resolve_ssh_key_path(args.ssh_key.as_deref())?;
         let public_key = ensure_ssh_key(&ssh_key_path).await?;
         let user_data_path = args
@@ -371,7 +378,7 @@ impl InstanceManager {
             name: args.name.clone(),
             release,
             arch,
-            accel: args.accel.unwrap_or(AccelMode::Auto),
+            accel,
             cpus: args.cpus.unwrap_or_else(InstanceConfig::default_cpus),
             memory_mib: args
                 .memory_mib
@@ -423,8 +430,9 @@ impl InstanceManager {
                 bail!("instance {name} does not exist; use `hp create {name}` first")
             }
             InstanceStatus::Stopped => {
-                self.ensure_start_dependencies(true, show_serial).await?;
                 let config = paths.read_config().await?;
+                self.ensure_start_dependencies(config.arch, true, show_serial)
+                    .await?;
                 self.ensure_existing_artifacts(paths).await?;
                 paths.clear_runtime_artifacts().await?;
                 launch_vm(&config, paths).await?;
@@ -437,8 +445,9 @@ impl InstanceManager {
                 Ok(VmInfo::from_config(&config, paths, paths.status().await?))
             }
             InstanceStatus::Running => {
-                self.ensure_start_dependencies(false, show_serial).await?;
                 let config = paths.read_config().await?;
+                self.ensure_start_dependencies(config.arch, false, show_serial)
+                    .await?;
                 wait_for_ssh(&config.ssh, config.timeout_secs).await?;
                 Ok(VmInfo::from_config(&config, paths, paths.status().await?))
             }
@@ -516,53 +525,56 @@ impl InstanceManager {
         Ok(())
     }
 
-    async fn ensure_create_dependencies(&self, allow_prompt: bool) -> Result<()> {
-        let host_arch = GuestArch::host_native()?;
-        let mut missing = self.collect_create_missing_dependencies(host_arch).await;
+    async fn ensure_create_dependencies(
+        &self,
+        guest_arch: GuestArch,
+        allow_prompt: bool,
+    ) -> Result<()> {
+        let mut missing = self.collect_create_missing_dependencies(guest_arch).await;
         if self
-            .maybe_offer_brew_install(host_arch, &missing, allow_prompt)
+            .maybe_offer_brew_install(guest_arch, &missing, allow_prompt)
             .await?
         {
-            missing = self.collect_create_missing_dependencies(host_arch).await;
+            missing = self.collect_create_missing_dependencies(guest_arch).await;
         }
-        ensure_host_dependencies(host_arch, &missing)
+        ensure_host_dependencies(guest_arch, &missing)
     }
 
     async fn ensure_start_dependencies(
         &self,
+        guest_arch: GuestArch,
         needs_launch: bool,
         allow_prompt: bool,
     ) -> Result<()> {
-        let host_arch = GuestArch::host_native()?;
         let mut missing = self
-            .collect_start_missing_dependencies(host_arch, needs_launch)
+            .collect_start_missing_dependencies(guest_arch, needs_launch)
             .await;
         if self
-            .maybe_offer_brew_install(host_arch, &missing, allow_prompt)
+            .maybe_offer_brew_install(guest_arch, &missing, allow_prompt)
             .await?
         {
             missing = self
-                .collect_start_missing_dependencies(host_arch, needs_launch)
+                .collect_start_missing_dependencies(guest_arch, needs_launch)
                 .await;
         }
-        ensure_host_dependencies(host_arch, &missing)
+        ensure_host_dependencies(guest_arch, &missing)
     }
 
     async fn collect_create_missing_dependencies(
         &self,
-        host_arch: GuestArch,
+        guest_arch: GuestArch,
     ) -> Vec<HostDependency> {
         let mut missing = Vec::new();
         if !command_exists("qemu-img").await {
             missing.push(HostDependency::QemuImg);
         }
-        if !command_exists(host_arch.qemu_binary()).await {
+        if !command_exists(guest_arch.qemu_binary()).await {
             missing.push(HostDependency::QemuSystem);
         }
         if !command_exists("ssh-keygen").await {
             missing.push(HostDependency::SshKeygen);
         }
-        if host_arch == GuestArch::Arm64 && discover_aarch64_firmware().is_err() {
+        if guest_arch == GuestArch::Arm64 && discover_aarch64_firmware().is_err() {
             missing.push(HostDependency::Aarch64Firmware);
         }
         missing
@@ -570,17 +582,17 @@ impl InstanceManager {
 
     async fn collect_start_missing_dependencies(
         &self,
-        host_arch: GuestArch,
+        guest_arch: GuestArch,
         needs_launch: bool,
     ) -> Vec<HostDependency> {
         let mut missing = Vec::new();
-        if needs_launch && !command_exists(host_arch.qemu_binary()).await {
+        if needs_launch && !command_exists(guest_arch.qemu_binary()).await {
             missing.push(HostDependency::QemuSystem);
         }
         if !command_exists("ssh").await {
             missing.push(HostDependency::Ssh);
         }
-        if needs_launch && host_arch == GuestArch::Arm64 && discover_aarch64_firmware().is_err() {
+        if needs_launch && guest_arch == GuestArch::Arm64 && discover_aarch64_firmware().is_err() {
             missing.push(HostDependency::Aarch64Firmware);
         }
         missing
@@ -588,7 +600,7 @@ impl InstanceManager {
 
     async fn maybe_offer_brew_install(
         &self,
-        host_arch: GuestArch,
+        guest_arch: GuestArch,
         missing: &[HostDependency],
         allow_prompt: bool,
     ) -> Result<bool> {
@@ -605,7 +617,7 @@ impl InstanceManager {
             return Ok(false);
         }
 
-        let prompt = brew_install_prompt(host_arch, missing);
+        let prompt = brew_install_prompt(guest_arch, missing);
         if !prompt_yes_no(&prompt).await? {
             return Ok(false);
         }
@@ -866,25 +878,45 @@ fn render_list_table(rows: &[ListRow]) -> String {
     output
 }
 
-fn ensure_host_dependencies(host_arch: GuestArch, missing: &[HostDependency]) -> Result<()> {
+fn validate_arch_accel_combo(
+    host_arch: GuestArch,
+    guest_arch: GuestArch,
+    accel: AccelMode,
+) -> Result<()> {
+    if guest_arch == host_arch || accel == AccelMode::Tcg {
+        return Ok(());
+    }
+
+    if accel == AccelMode::Auto {
+        bail!(
+            "guest architecture {guest_arch} does not match host architecture {host_arch}; use `--accel tcg` for cross-architecture emulation"
+        );
+    }
+
+    bail!(
+        "acceleration mode {accel} only supports host-native guests ({host_arch}); use `--accel tcg` for {guest_arch} emulation"
+    )
+}
+
+fn ensure_host_dependencies(guest_arch: GuestArch, missing: &[HostDependency]) -> Result<()> {
     if missing.is_empty() {
         return Ok(());
     }
-    bail!("{}", missing_dependency_message(host_arch, missing))
+    bail!("{}", missing_dependency_message(guest_arch, missing))
 }
 
-fn missing_dependency_message(host_arch: GuestArch, missing: &[HostDependency]) -> String {
-    missing_dependency_message_for_os(host_arch, missing, std::env::consts::OS)
+fn missing_dependency_message(guest_arch: GuestArch, missing: &[HostDependency]) -> String {
+    missing_dependency_message_for_os(guest_arch, missing, std::env::consts::OS)
 }
 
 fn missing_dependency_message_for_os(
-    host_arch: GuestArch,
+    guest_arch: GuestArch,
     missing: &[HostDependency],
     os: &str,
 ) -> String {
     let labels = missing
         .iter()
-        .map(|dependency| dependency.label(host_arch))
+        .map(|dependency| dependency.label(guest_arch))
         .collect::<Vec<_>>()
         .join(", ");
     if missing
@@ -920,11 +952,11 @@ fn should_offer_brew_install(
             .any(|dependency| dependency.is_qemu_related())
 }
 
-fn brew_install_prompt(host_arch: GuestArch, missing: &[HostDependency]) -> String {
+fn brew_install_prompt(guest_arch: GuestArch, missing: &[HostDependency]) -> String {
     let labels = missing
         .iter()
         .filter(|dependency| dependency.is_qemu_related())
-        .map(|dependency| dependency.label(host_arch))
+        .map(|dependency| dependency.label(guest_arch))
         .collect::<Vec<_>>()
         .join(", ");
     format!("QEMU is missing ({labels}). Run `brew install qemu` now? [y/N]: ")
@@ -1060,7 +1092,7 @@ mod tests {
     use super::{
         HostDependency, ListRow, VmInfo, booting_message, brew_install_prompt, created_lines,
         ensure_match, expand_path, missing_dependency_message, missing_dependency_message_for_os,
-        ready_lines, render_list_table, should_offer_brew_install,
+        ready_lines, render_list_table, should_offer_brew_install, validate_arch_accel_combo,
     };
     use crate::state::{
         AccelMode, CloudInitConfig, GuestArch, ImageConfig, InstanceConfig, InstancePaths,
@@ -1245,6 +1277,28 @@ mod tests {
         );
         assert!(message.contains("install QEMU"));
         assert!(!message.contains("brew install qemu"));
+    }
+
+    #[test]
+    fn cross_arch_requires_tcg_for_auto() {
+        let err = validate_arch_accel_combo(GuestArch::Arm64, GuestArch::Amd64, AccelMode::Auto)
+            .expect_err("should fail");
+        assert!(err.to_string().contains("--accel tcg"));
+        assert!(err.to_string().contains("cross-architecture emulation"));
+    }
+
+    #[test]
+    fn cross_arch_requires_tcg_for_non_tcg_explicit_accel() {
+        let err = validate_arch_accel_combo(GuestArch::Arm64, GuestArch::Amd64, AccelMode::Hvf)
+            .expect_err("should fail");
+        assert!(err.to_string().contains("host-native guests"));
+        assert!(err.to_string().contains("--accel tcg"));
+    }
+
+    #[test]
+    fn cross_arch_is_allowed_with_tcg() {
+        validate_arch_accel_combo(GuestArch::Arm64, GuestArch::Amd64, AccelMode::Tcg)
+            .expect("tcg should allow cross-arch guests");
     }
 
     #[test]
