@@ -30,12 +30,12 @@ From crates.io:
 cargo install hardpass-vm
 ```
 
-That installs the `hardpass` executable.
+That installs the `hp` executable.
 
 From the GitHub repository:
 
 ```bash
-cargo install --git https://github.com/peterdelevoryas/hardpass --bin hardpass
+cargo install --git https://github.com/peterdelevoryas/hardpass
 ```
 
 From a local checkout:
@@ -44,47 +44,47 @@ From a local checkout:
 cargo install --path .
 ```
 
-That installs the `hardpass` executable into Cargo's bin directory so the examples below can be run directly.
+That installs `hp` into Cargo's bin directory so the examples below can be run directly.
 
 ## Quick Start
 
 ```bash
-hardpass doctor
-hardpass image prefetch
-hardpass create dev
-hardpass start dev
-hardpass list
-hardpass info dev
-hardpass ssh dev
-hardpass exec dev -- uname -a
-hardpass stop dev
-hardpass delete dev
+hp doctor
+hp image prefetch
+hp create dev
+hp start dev
+hp list
+hp info dev
+hp ssh dev
+hp exec dev -- uname -a
+hp stop dev
+hp delete dev
 ```
 
 `create` defaults to Ubuntu `24.04` on the host-native guest architecture. You can override VM size and forwarding when needed:
 
 ```bash
-hardpass create test \
+hp create test \
   --release 24.04 \
   --cpus 4 \
   --memory-mib 4096 \
   --disk-gib 24 \
   --forward 8080:8080
 
-hardpass start test
+hp start test
 ```
 
 If you want to warm the image cache before the first VM boot:
 
 ```bash
-hardpass image prefetch
-hardpass image prefetch --release 24.04 --arch amd64
+hp image prefetch
+hp image prefetch --release 24.04 --arch amd64
 ```
 
 Use `info --json` when another tool needs machine-readable state:
 
 ```bash
-hardpass info dev --json
+hp info dev --json
 ```
 
 The JSON payload includes `ssh.alias`, so other tools can discover the SSH alias directly.
@@ -104,7 +104,7 @@ Each VM name becomes an SSH alias with the stored loopback port and identity fil
 ssh dev
 ```
 
-With the default `~/.hardpass` root, `hardpass create` and `hardpass delete` keep the alias file up to date automatically.
+With the default `~/.hardpass` root, `hp create` and `hp delete` keep the alias file up to date automatically.
 
 ## Host Requirements
 
@@ -115,7 +115,7 @@ With the default `~/.hardpass` root, `hardpass create` and `hardpass delete` kee
 - Linux hosts need `/dev/kvm`; Hardpass does not fall back to TCG
 - AArch64 hosts also need discoverable UEFI firmware for QEMU
 
-Run `hardpass doctor` to confirm the local environment before creating a VM.
+Run `hp doctor` to confirm the local environment before creating a VM.
 
 ## Security Notes
 

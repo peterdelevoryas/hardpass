@@ -3,7 +3,7 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 use crate::state::{AccelMode, GuestArch};
 
 #[derive(Debug, Parser)]
-#[command(name = "hardpass")]
+#[command(name = "hp")]
 #[command(about = "Manage local Ubuntu cloud-image VMs with QEMU")]
 pub struct Args {
     #[command(subcommand)]
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn parses_create_command() {
         let args = Args::parse_from([
-            "hardpass",
+            "hp",
             "create",
             "dev",
             "--release",
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn parses_start_command() {
-        let args = Args::parse_from(["hardpass", "start", "dev"]);
+        let args = Args::parse_from(["hp", "start", "dev"]);
         match args.command {
             Command::Start(start) => assert_eq!(start.name, "dev"),
             other => panic!("unexpected command: {other:?}"),
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn parses_image_prefetch_command() {
         let args = Args::parse_from([
-            "hardpass",
+            "hp",
             "image",
             "prefetch",
             "--release",
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn parses_exec_command() {
-        let args = Args::parse_from(["hardpass", "exec", "dev", "--", "uname", "-m"]);
+        let args = Args::parse_from(["hp", "exec", "dev", "--", "uname", "-m"]);
         match args.command {
             Command::Exec(exec) => {
                 assert_eq!(exec.name, "dev");

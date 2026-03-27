@@ -69,7 +69,7 @@ impl InstanceManager {
         Self {
             state,
             client: reqwest::Client::builder()
-                .user_agent("hardpass/0.1.0")
+                .user_agent(concat!("hardpass/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .expect("reqwest client"),
         }
@@ -260,7 +260,7 @@ impl InstanceManager {
                 ))
             }
             InstanceStatus::Stopped | InstanceStatus::Running => bail!(
-                "instance {} already exists; use `hardpass start {}` or `hardpass delete {}`",
+                "instance {} already exists; use `hp start {}` or `hp delete {}`",
                 args.name,
                 args.name,
                 args.name
@@ -420,7 +420,7 @@ impl InstanceManager {
     ) -> Result<VmInfo> {
         match paths.status().await? {
             InstanceStatus::Missing => {
-                bail!("instance {name} does not exist; use `hardpass create {name}` first")
+                bail!("instance {name} does not exist; use `hp create {name}` first")
             }
             InstanceStatus::Stopped => {
                 self.ensure_start_dependencies(true, show_serial).await?;
@@ -638,7 +638,7 @@ impl InstanceManager {
     async fn running_instance(&self, name: &str) -> Result<(InstancePaths, InstanceConfig)> {
         let (paths, config) = self.instance(name).await?;
         if !matches!(paths.status().await?, InstanceStatus::Running) {
-            bail!("instance {name} is not running; use `hardpass start {name}` first");
+            bail!("instance {name} is not running; use `hp start {name}` first");
         }
         Ok((paths, config))
     }
@@ -825,7 +825,7 @@ fn booting_message(name: &str) -> String {
 fn created_lines(info: &VmInfo) -> [String; 3] {
     [
         format!("Created {}", info.name),
-        format!("start: hardpass start {}", info.name),
+        format!("start: hp start {}", info.name),
         format!("serial log: {}", info.serial_log.display()),
     ]
 }
@@ -833,7 +833,7 @@ fn created_lines(info: &VmInfo) -> [String; 3] {
 fn ready_lines(info: &VmInfo) -> [String; 3] {
     [
         format!("{} is ready", info.name),
-        format!("ssh: hardpass ssh {}", info.name),
+        format!("ssh: hp ssh {}", info.name),
         format!("serial log: {}", info.serial_log.display()),
     ]
 }
@@ -897,10 +897,10 @@ fn missing_dependency_message_for_os(
             "install QEMU"
         };
         format!(
-            "QEMU is not installed or incomplete (missing {labels}); {install_hint} and run `hardpass doctor` for details"
+            "QEMU is not installed or incomplete (missing {labels}); {install_hint} and run `hp doctor` for details"
         )
     } else {
-        format!("missing required host dependencies: {labels}; run `hardpass doctor` for details")
+        format!("missing required host dependencies: {labels}; run `hp doctor` for details")
     }
 }
 
@@ -1166,7 +1166,7 @@ mod tests {
         let info = VmInfo::from_config(&config, &paths, InstanceStatus::Stopped);
         let lines = created_lines(&info);
         assert_eq!(lines[0], "Created neuromancer");
-        assert_eq!(lines[1], "start: hardpass start neuromancer");
+        assert_eq!(lines[1], "start: hp start neuromancer");
         assert!(lines[2].contains("serial log:"));
     }
 
@@ -1206,7 +1206,7 @@ mod tests {
         let info = VmInfo::from_config(&config, &paths, InstanceStatus::Running);
         let lines = ready_lines(&info);
         assert_eq!(lines[0], "neuromancer is ready");
-        assert_eq!(lines[1], "ssh: hardpass ssh neuromancer");
+        assert_eq!(lines[1], "ssh: hp ssh neuromancer");
         assert!(lines[2].contains("serial log:"));
     }
 
@@ -1221,7 +1221,7 @@ mod tests {
         assert!(message.contains("qemu-system-aarch64"));
         assert!(message.contains("aarch64-firmware"));
         assert!(message.contains("brew install qemu"));
-        assert!(message.contains("hardpass doctor"));
+        assert!(message.contains("hp doctor"));
     }
 
     #[test]
@@ -1233,7 +1233,7 @@ mod tests {
         assert!(message.contains("missing required host dependencies"));
         assert!(message.contains("qemu-img"));
         assert!(message.contains("ssh-keygen"));
-        assert!(message.contains("hardpass doctor"));
+        assert!(message.contains("hp doctor"));
     }
 
     #[test]

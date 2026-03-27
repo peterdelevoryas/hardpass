@@ -1,7 +1,8 @@
 [package]
 name = "hardpass-vm"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
+default-run = "hp"
 license = "MIT OR Apache-2.0"
 description = "A small, reliable Ubuntu cloud-image VM manager built on QEMU."
 readme = "README.md"
@@ -16,7 +17,7 @@ name = "hardpass"
 path = "src/lib.rs"
 
 [[bin]]
-name = "hardpass"
+name = "hp"
 path = "src/main.rs"
 
 [dependencies]
