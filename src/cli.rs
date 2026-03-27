@@ -14,6 +14,8 @@ pub struct Args {
 pub enum Command {
     /// Check the local environment for required tools and firmware.
     Doctor,
+    /// Manage cached Ubuntu cloud images.
+    Image(ImageArgs),
     /// Create a named VM.
     Create(CreateArgs),
     /// Start a named VM.
@@ -26,8 +28,6 @@ pub enum Command {
     List,
     /// Show details for a named VM.
     Info(InfoArgs),
-    /// Manage SSH config integration for Hardpass VMs.
-    SshConfig(SshConfigArgs),
     /// Open an interactive SSH session to a running VM.
     Ssh(SshArgs),
     /// Execute a remote command over SSH.
@@ -37,6 +37,26 @@ pub enum Command {
 #[derive(Debug, Clone, ClapArgs)]
 pub struct NameArgs {
     pub name: String,
+}
+
+#[derive(Debug, Clone, ClapArgs)]
+pub struct ImageArgs {
+    #[command(subcommand)]
+    pub command: ImageCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum ImageCommand {
+    /// Download and verify a cloud image into the local cache.
+    Prefetch(PrefetchImageArgs),
+}
+
+#[derive(Debug, Clone, ClapArgs)]
+pub struct PrefetchImageArgs {
+    #[arg(long)]
+    pub release: Option<String>,
+    #[arg(long, value_enum)]
+    pub arch: Option<GuestArch>,
 }
 
 #[derive(Debug, Clone, ClapArgs)]
@@ -58,20 +78,6 @@ pub struct ExecArgs {
     pub name: String,
     #[arg(required = true, last = true)]
     pub command: Vec<String>,
-}
-
-#[derive(Debug, Clone, ClapArgs)]
-pub struct SshConfigArgs {
-    #[command(subcommand)]
-    pub command: SshConfigCommand,
-}
-
-#[derive(Debug, Clone, Subcommand)]
-pub enum SshConfigCommand {
-    /// Install the managed Include block into ~/.ssh/config.
-    Install,
-    /// Rewrite the managed Hardpass SSH host entries.
-    Sync,
 }
 
 #[derive(Debug, Clone, ClapArgs)]
@@ -118,7 +124,7 @@ fn parse_forward(value: &str) -> Result<(u16, u16), String> {
 mod tests {
     use clap::Parser;
 
-    use super::{Args, Command, SshConfigCommand};
+    use super::{Args, Command, ImageCommand};
     use crate::state::{AccelMode, GuestArch};
 
     #[test]
@@ -167,6 +173,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_image_prefetch_command() {
+        let args = Args::parse_from([
+            "hardpass",
+            "image",
+            "prefetch",
+            "--release",
+            "24.04",
+            "--arch",
+            "arm64",
+        ]);
+        match args.command {
+            Command::Image(image) => match image.command {
+                ImageCommand::Prefetch(prefetch) => {
+                    assert_eq!(prefetch.release.as_deref(), Some("24.04"));
+                    assert_eq!(prefetch.arch, Some(GuestArch::Arm64));
+                }
+            },
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_exec_command() {
         let args = Args::parse_from(["hardpass", "exec", "dev", "--", "uname", "-m"]);
         match args.command {
@@ -174,18 +202,6 @@ mod tests {
                 assert_eq!(exec.name, "dev");
                 assert_eq!(exec.command, vec!["uname", "-m"]);
             }
-            other => panic!("unexpected command: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parses_ssh_config_install_command() {
-        let args = Args::parse_from(["hardpass", "ssh-config", "install"]);
-        match args.command {
-            Command::SshConfig(ssh_config) => match ssh_config.command {
-                SshConfigCommand::Install => {}
-                other => panic!("unexpected ssh-config command: {other:?}"),
-            },
             other => panic!("unexpected command: {other:?}"),
         }
     }

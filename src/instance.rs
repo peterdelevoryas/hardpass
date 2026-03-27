@@ -13,7 +13,7 @@ use tokio::process::Command;
 use tokio::sync::watch;
 use tokio::time::sleep;
 
-use crate::cli::CreateArgs;
+use crate::cli::{CreateArgs, PrefetchImageArgs};
 use crate::cloud_init::{create_seed_image, render_cloud_init};
 use crate::images::ensure_image;
 use crate::lock::lock_file;
@@ -124,9 +124,23 @@ impl InstanceManager {
         Ok(())
     }
 
+    pub async fn prefetch_image(&self, args: PrefetchImageArgs) -> Result<()> {
+        let release = args
+            .release
+            .unwrap_or_else(|| InstanceConfig::default_release().to_string());
+        let arch = args.arch.unwrap_or(GuestArch::host_native()?);
+        let image = ensure_image(&self.client, &self.state.images_dir(), &release, arch).await?;
+        let size_bytes = tokio::fs::metadata(&image.local_path).await?.len();
+        println!("Prefetched Ubuntu {release} {arch} image");
+        println!("path: {}", image.local_path.display());
+        println!("sha256: {}", image.config.sha256);
+        println!("size_bytes: {size_bytes}");
+        Ok(())
+    }
+
     pub async fn create(&self, args: CreateArgs) -> Result<()> {
         let info = self.create_with_output(args).await?;
-        self.auto_sync_ssh_config_if_enabled().await;
+        self.auto_configure_ssh_if_enabled().await;
         self.print_created(&info);
         Ok(())
     }
@@ -148,7 +162,7 @@ impl InstanceManager {
         let _lock = lock_file(paths.lock_path()).await?;
         self.delete_inner(name, true).await?;
         drop(_lock);
-        self.auto_sync_ssh_config_if_enabled().await;
+        self.auto_configure_ssh_if_enabled().await;
         Ok(())
     }
 
@@ -221,31 +235,6 @@ impl InstanceManager {
     pub async fn exec(&self, name: &str, command: &[String]) -> Result<()> {
         let (_, config) = self.running_instance(name).await?;
         ssh_exec(&config.ssh, command).await
-    }
-
-    pub async fn install_ssh_config(&self) -> Result<()> {
-        self.ensure_ssh_config_managed_root()?;
-        let _lock = lock_file(self.state.ssh_config_lock_path()).await?;
-        let manager = SshConfigManager::from_home_dir()?;
-        manager.install().await?;
-        println!(
-            "Installed Hardpass SSH include in {}",
-            manager.main_config_path().display()
-        );
-        Ok(())
-    }
-
-    pub async fn sync_ssh_config(&self) -> Result<()> {
-        self.ensure_ssh_config_managed_root()?;
-        let _lock = lock_file(self.state.ssh_config_lock_path()).await?;
-        let manager = SshConfigManager::from_home_dir()?;
-        let entries = self.collect_ssh_alias_entries().await?;
-        manager.sync(&entries).await?;
-        println!(
-            "Synced Hardpass SSH aliases in {}",
-            manager.managed_include_path().display()
-        );
-        Ok(())
     }
 
     pub(crate) async fn create_silent(&self, args: CreateArgs) -> Result<VmInfo> {
@@ -726,16 +715,6 @@ impl InstanceManager {
         wait_result
     }
 
-    fn ensure_ssh_config_managed_root(&self) -> Result<()> {
-        if self.state.manages_ssh_config() {
-            Ok(())
-        } else {
-            bail!(
-                "SSH config integration is only supported for the default Hardpass root (~/.hardpass)"
-            )
-        }
-    }
-
     async fn collect_ssh_alias_entries(&self) -> Result<Vec<SshAliasEntry>> {
         let mut entries = Vec::new();
         for name in self.state.instance_names().await? {
@@ -755,20 +734,21 @@ impl InstanceManager {
         Ok(entries)
     }
 
-    async fn auto_sync_ssh_config_if_enabled(&self) {
+    pub(crate) async fn auto_configure_ssh_if_enabled(&self) {
         if !self.state.should_auto_sync_ssh_config() {
             return;
         }
-        if let Err(err) = self.sync_ssh_config_if_installed().await {
-            eprintln!("warning: failed to sync Hardpass SSH config: {err:#}");
+        if let Err(err) = self.configure_ssh_if_enabled().await {
+            eprintln!("warning: failed to update Hardpass SSH config: {err:#}");
         }
     }
 
-    async fn sync_ssh_config_if_installed(&self) -> Result<()> {
+    async fn configure_ssh_if_enabled(&self) -> Result<()> {
         let _lock = lock_file(self.state.ssh_config_lock_path()).await?;
         let manager = SshConfigManager::from_home_dir()?;
         let entries = self.collect_ssh_alias_entries().await?;
-        let _ = manager.sync_if_installed(&entries).await?;
+        manager.install().await?;
+        manager.sync(&entries).await?;
         Ok(())
     }
 }

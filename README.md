@@ -12,14 +12,13 @@ It exists for people who want a simpler, more predictable local VM workflow than
 ## Commands
 
 - `doctor` checks for required local tools and firmware.
+- `image prefetch` downloads and verifies a cloud image into the local cache.
 - `create` creates a named VM.
 - `start` boots a named VM and waits for SSH.
 - `stop` gracefully stops a named VM.
 - `delete` stops and removes a named VM.
 - `list` shows known VMs.
 - `info [--json]` prints VM details.
-- `ssh-config install` adds the managed Hardpass include to `~/.ssh/config`.
-- `ssh-config sync` rewrites the managed Hardpass host aliases.
 - `ssh` opens an interactive SSH session.
 - `exec` runs a remote command over SSH.
 
@@ -51,14 +50,13 @@ That installs the `hardpass` executable into Cargo's bin directory so the exampl
 
 ```bash
 hardpass doctor
+hardpass image prefetch
 hardpass create dev
 hardpass start dev
 hardpass list
 hardpass info dev
 hardpass ssh dev
 hardpass exec dev -- uname -a
-hardpass ssh-config install
-hardpass ssh-config sync
 hardpass stop dev
 hardpass delete dev
 ```
@@ -76,6 +74,13 @@ hardpass create test \
 hardpass start test
 ```
 
+If you want to warm the image cache before the first VM boot:
+
+```bash
+hardpass image prefetch
+hardpass image prefetch --release 24.04 --arch amd64
+```
+
 Use `info --json` when another tool needs machine-readable state:
 
 ```bash
@@ -88,12 +93,10 @@ The JSON payload includes `ssh.alias`, so other tools can discover the SSH alias
 
 Hardpass stores state under `~/.hardpass` by default. Set `HARDPASS_HOME` if you want a different root.
 
-Install the one-time include block, then sync the current VM aliases:
+When using the default `~/.hardpass` root, Hardpass automatically:
 
-```bash
-hardpass ssh-config install
-hardpass ssh-config sync
-```
+- adds `Include ~/.hardpass/ssh/config` to `~/.ssh/config`
+- rewrites `~/.hardpass/ssh/config` to match the current VM aliases
 
 Each VM name becomes an SSH alias with the stored loopback port and identity file:
 
@@ -101,7 +104,7 @@ Each VM name becomes an SSH alias with the stored loopback port and identity fil
 ssh dev
 ```
 
-If the managed include is installed, `hardpass create` and `hardpass delete` keep the alias file up to date automatically for the default `~/.hardpass` root.
+With the default `~/.hardpass` root, `hardpass create` and `hardpass delete` keep the alias file up to date automatically.
 
 ## Host Requirements
 

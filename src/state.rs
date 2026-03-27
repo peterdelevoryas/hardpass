@@ -245,10 +245,6 @@ impl HardpassState {
         self.locks_dir().join("ssh-config.lock")
     }
 
-    pub fn manages_ssh_config(&self) -> bool {
-        self.manages_ssh_config
-    }
-
     pub fn should_auto_sync_ssh_config(&self) -> bool {
         self.manages_ssh_config && self.auto_sync_ssh_config
     }

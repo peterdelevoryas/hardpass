@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 
-const MANAGED_BEGIN: &str = "# >>> hardpass managed ssh include v1 >>>";
-const MANAGED_END: &str = "# <<< hardpass managed ssh include v1 <<<";
-const MANAGED_BLOCK: &str = "# >>> hardpass managed ssh include v1 >>>\nInclude ~/.ssh/config.d/hardpass.conf\n# <<< hardpass managed ssh include v1 <<<\n";
+const MANAGED_INCLUDE_LINE: &str = "Include ~/.hardpass/ssh/config";
+const LEGACY_INCLUDE_LINE: &str = "Include ~/.ssh/config.d/hardpass.conf";
+const LEGACY_MANAGED_BEGIN: &str = "# >>> hardpass managed ssh include v1 >>>";
+const LEGACY_MANAGED_END: &str = "# <<< hardpass managed ssh include v1 <<<";
 const MANAGED_HEADER: &str = "# managed by hardpass; edits will be overwritten\n";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,116 +37,116 @@ impl SshConfigManager {
     }
 
     pub fn managed_include_path(&self) -> PathBuf {
-        self.ssh_config_dir().join("hardpass.conf")
+        self.managed_include_dir().join("config")
     }
 
     pub async fn install(&self) -> Result<()> {
         ensure_dir_mode(&self.ssh_dir(), 0o700).await?;
-        ensure_dir_mode(&self.ssh_config_dir(), 0o700).await?;
+        ensure_dir_mode(&self.hardpass_dir(), 0o700).await?;
+        ensure_dir_mode(&self.managed_include_dir(), 0o700).await?;
         let existing = match tokio::fs::read_to_string(self.main_config_path()).await {
             Ok(content) => content,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(err) => return Err(err.into()),
         };
-        let updated = install_managed_block(&existing)?;
+        let updated = install_managed_include(&existing);
         write_file_atomic(&self.main_config_path(), updated.as_bytes(), 0o600).await
-    }
-
-    pub async fn is_installed(&self) -> Result<bool> {
-        let existing = match tokio::fs::read_to_string(self.main_config_path()).await {
-            Ok(content) => content,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(err) => return Err(err.into()),
-        };
-        managed_block_state(&existing).map(ManagedBlockState::is_installed)
     }
 
     pub async fn sync(&self, entries: &[SshAliasEntry]) -> Result<()> {
         ensure_dir_mode(&self.ssh_dir(), 0o700).await?;
-        ensure_dir_mode(&self.ssh_config_dir(), 0o700).await?;
+        ensure_dir_mode(&self.hardpass_dir(), 0o700).await?;
+        ensure_dir_mode(&self.managed_include_dir(), 0o700).await?;
         let rendered = render_managed_include(entries);
         write_file_atomic(&self.managed_include_path(), rendered.as_bytes(), 0o600).await
-    }
-
-    pub async fn sync_if_installed(&self, entries: &[SshAliasEntry]) -> Result<bool> {
-        if self.is_installed().await? {
-            self.sync(entries).await?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
     }
 
     fn ssh_dir(&self) -> PathBuf {
         self.home.join(".ssh")
     }
 
-    fn ssh_config_dir(&self) -> PathBuf {
-        self.ssh_dir().join("config.d")
+    fn hardpass_dir(&self) -> PathBuf {
+        self.home.join(".hardpass")
+    }
+
+    fn managed_include_dir(&self) -> PathBuf {
+        self.hardpass_dir().join("ssh")
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ManagedBlockState {
-    Missing,
-    Installed,
+fn install_managed_include(content: &str) -> String {
+    let (without_integration, _) = remove_hardpass_integration(content);
+    let insertion =
+        first_host_or_match_offset(&without_integration).unwrap_or(without_integration.len());
+    let before = without_integration[..insertion].trim_end_matches('\n');
+    let after = without_integration[insertion..].trim_start_matches('\n');
+
+    let mut updated = String::new();
+    if before.is_empty() {
+        updated.push_str(MANAGED_INCLUDE_LINE);
+        updated.push('\n');
+    } else {
+        updated.push_str(before);
+        updated.push_str("\n\n");
+        updated.push_str(MANAGED_INCLUDE_LINE);
+        updated.push('\n');
+    }
+    if !after.is_empty() {
+        updated.push('\n');
+        updated.push_str(after);
+    }
+    updated
 }
 
-impl ManagedBlockState {
-    fn is_installed(self) -> bool {
-        matches!(self, Self::Installed)
-    }
-}
+fn remove_hardpass_integration(content: &str) -> (String, bool) {
+    let mut updated = String::new();
+    let mut found = false;
+    let mut skipping_legacy_block = false;
 
-fn managed_block_state(content: &str) -> Result<ManagedBlockState> {
-    let begin_count = content.match_indices(MANAGED_BEGIN).count();
-    let end_count = content.match_indices(MANAGED_END).count();
-    if begin_count == 0 && end_count == 0 {
-        return Ok(ManagedBlockState::Missing);
-    }
-    if begin_count != 1 || end_count != 1 {
-        bail!("invalid ~/.ssh/config: duplicate hardpass managed block markers");
-    }
-    let begin = content
-        .find(MANAGED_BEGIN)
-        .ok_or_else(|| anyhow!("missing begin marker"))?;
-    let end = content
-        .find(MANAGED_END)
-        .ok_or_else(|| anyhow!("missing end marker"))?;
-    if begin > end {
-        bail!("invalid ~/.ssh/config: hardpass managed block markers are out of order");
-    }
-    Ok(ManagedBlockState::Installed)
-}
-
-fn install_managed_block(content: &str) -> Result<String> {
-    match managed_block_state(content)? {
-        ManagedBlockState::Missing => {
-            if content.is_empty() {
-                Ok(MANAGED_BLOCK.to_string())
-            } else {
-                let trimmed = content.trim_end_matches('\n');
-                Ok(format!("{trimmed}\n\n{MANAGED_BLOCK}"))
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if skipping_legacy_block {
+            found = true;
+            if trimmed == LEGACY_MANAGED_END {
+                skipping_legacy_block = false;
             }
+            continue;
         }
-        ManagedBlockState::Installed => {
-            let begin = content
-                .find(MANAGED_BEGIN)
-                .ok_or_else(|| anyhow!("missing begin marker"))?;
-            let end = content
-                .find(MANAGED_END)
-                .ok_or_else(|| anyhow!("missing end marker"))?;
-            let end_index = end + MANAGED_END.len();
-            let mut updated = String::new();
-            updated.push_str(&content[..begin]);
-            updated.push_str(MANAGED_BLOCK);
-            let suffix = content[end_index..]
-                .strip_prefix('\n')
-                .unwrap_or(&content[end_index..]);
-            updated.push_str(suffix);
-            Ok(updated)
+        if trimmed == LEGACY_MANAGED_BEGIN {
+            found = true;
+            skipping_legacy_block = true;
+            continue;
         }
+        if trimmed == MANAGED_INCLUDE_LINE || trimmed == LEGACY_INCLUDE_LINE {
+            found = true;
+            continue;
+        }
+        updated.push_str(line);
     }
+
+    (updated, found)
+}
+
+fn first_host_or_match_offset(content: &str) -> Option<usize> {
+    let mut offset = 0;
+    for line in content.split_inclusive('\n') {
+        if is_scoped_ssh_directive(line) {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+    None
+}
+
+fn is_scoped_ssh_directive(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return false;
+    }
+    let Some(keyword) = trimmed.split_whitespace().next() else {
+        return false;
+    };
+    keyword.eq_ignore_ascii_case("host") || keyword.eq_ignore_ascii_case("match")
 }
 
 fn render_managed_include(entries: &[SshAliasEntry]) -> String {
@@ -234,25 +235,66 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{SshAliasEntry, SshConfigManager, install_managed_block, render_managed_include};
+    use super::{
+        MANAGED_INCLUDE_LINE, SshAliasEntry, SshConfigManager, install_managed_include,
+        render_managed_include,
+    };
 
     #[test]
-    fn install_managed_block_inserts_into_empty_config() {
-        let content = install_managed_block("").expect("install");
-        assert!(content.contains("Include ~/.ssh/config.d/hardpass.conf"));
+    fn install_managed_include_inserts_into_empty_config() {
+        let content = install_managed_include("");
+        assert_eq!(content, format!("{MANAGED_INCLUDE_LINE}\n"));
     }
 
     #[test]
-    fn install_managed_block_replaces_existing_block_idempotently() {
+    fn install_managed_include_replaces_existing_block_idempotently() {
         let initial = "# comment\n\n# >>> hardpass managed ssh include v1 >>>\nInclude ~/.ssh/old\n# <<< hardpass managed ssh include v1 <<<\n";
-        let content = install_managed_block(initial).expect("install");
-        assert_eq!(
-            content
-                .matches("Include ~/.ssh/config.d/hardpass.conf")
-                .count(),
-            1
+        let content = install_managed_include(initial);
+        assert_eq!(content.matches(MANAGED_INCLUDE_LINE).count(), 1);
+        assert_eq!(install_managed_include(&content), content);
+    }
+
+    #[test]
+    fn install_managed_include_places_include_before_first_host_block() {
+        let initial = "# Added by OrbStack\nInclude ~/.orbstack/ssh/config\nInclude ~/.ssh/feathervm/config\n\nHost *.example.com\n  User ubuntu\n";
+        let content = install_managed_include(initial);
+        let include = content
+            .find(MANAGED_INCLUDE_LINE)
+            .expect("hardpass include");
+        let host = content.find("Host *.example.com").expect("host block");
+        assert!(
+            include < host,
+            "hardpass include must be before first Host block"
         );
-        assert_eq!(install_managed_block(&content).expect("reinstall"), content);
+        assert!(content.contains("Include ~/.orbstack/ssh/config"));
+        assert!(content.contains("Include ~/.ssh/feathervm/config"));
+    }
+
+    #[test]
+    fn install_managed_include_relocates_existing_block_out_of_host_scope() {
+        let initial = "Host *.example.com\n  User ubuntu\n\n# >>> hardpass managed ssh include v1 >>>\nInclude ~/.ssh/old\n# <<< hardpass managed ssh include v1 <<<\n";
+        let content = install_managed_include(initial);
+        let include = content
+            .find(MANAGED_INCLUDE_LINE)
+            .expect("hardpass include");
+        let host = content.find("Host *.example.com").expect("host block");
+        assert!(
+            include < host,
+            "hardpass include must be before first Host block"
+        );
+        assert_eq!(content.matches(MANAGED_INCLUDE_LINE).count(), 1);
+    }
+
+    #[test]
+    fn install_managed_include_relocates_existing_plain_include() {
+        let initial = "Host *.example.com\n  User ubuntu\n\nInclude ~/.hardpass/ssh/config\n";
+        let content = install_managed_include(initial);
+        let include = content
+            .find(MANAGED_INCLUDE_LINE)
+            .expect("hardpass include");
+        let host = content.find("Host *.example.com").expect("host block");
+        assert!(include < host);
+        assert_eq!(content.matches(MANAGED_INCLUDE_LINE).count(), 1);
     }
 
     #[test]
@@ -301,7 +343,7 @@ mod tests {
         let include = tokio::fs::read_to_string(manager.managed_include_path())
             .await
             .expect("read include");
-        assert!(config.contains("Include ~/.ssh/config.d/hardpass.conf"));
+        assert!(config.contains(MANAGED_INCLUDE_LINE));
         assert!(include.contains("Host neuromancer"));
 
         let config_mode = std::fs::metadata(manager.main_config_path())

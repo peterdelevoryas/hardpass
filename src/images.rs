@@ -1,4 +1,6 @@
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use reqwest::Client;
@@ -127,13 +129,122 @@ async fn download_image(client: &Client, url: &str, path: &Path) -> Result<()> {
     let tmp = path.with_extension("download");
     let mut file = tokio::fs::File::create(&tmp).await?;
     let mut response = client.get(url).send().await?.error_for_status()?;
+    let mut progress = DownloadProgress::new(url, path, response.content_length());
     while let Some(chunk) = response.chunk().await? {
         file.write_all(&chunk).await?;
+        progress.advance(chunk.len() as u64);
     }
     file.flush().await?;
     drop(file);
+    progress.finish();
     tokio::fs::rename(&tmp, path).await?;
     Ok(())
+}
+
+struct DownloadProgress {
+    label: String,
+    total_bytes: Option<u64>,
+    downloaded_bytes: u64,
+    started_at: Instant,
+    last_render_at: Instant,
+    is_terminal: bool,
+}
+
+impl DownloadProgress {
+    fn new(url: &str, path: &Path, total_bytes: Option<u64>) -> Self {
+        let label = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| url.to_string());
+        let is_terminal = std::io::stderr().is_terminal();
+        let now = Instant::now();
+        let progress = Self {
+            label,
+            total_bytes,
+            downloaded_bytes: 0,
+            started_at: now,
+            last_render_at: now,
+            is_terminal,
+        };
+        progress.render(false);
+        progress
+    }
+
+    fn advance(&mut self, bytes: u64) {
+        self.downloaded_bytes += bytes;
+        if !self.is_terminal {
+            return;
+        }
+        let now = Instant::now();
+        if now.duration_since(self.last_render_at) >= Duration::from_millis(125) {
+            self.last_render_at = now;
+            self.render(false);
+        }
+    }
+
+    fn finish(&mut self) {
+        self.render(true);
+    }
+
+    fn render(&self, finished: bool) {
+        if !self.is_terminal {
+            return;
+        }
+        let elapsed = self.started_at.elapsed().as_secs_f64().max(0.001);
+        let throughput = self.downloaded_bytes as f64 / elapsed;
+        let downloaded = format_bytes(self.downloaded_bytes);
+        let speed = format!("{}/s", format_bytes(throughput as u64));
+
+        let line = match self.total_bytes {
+            Some(total_bytes) if total_bytes > 0 => {
+                let total = format_bytes(total_bytes);
+                let percent =
+                    (self.downloaded_bytes as f64 / total_bytes as f64 * 100.0).min(100.0);
+                if finished {
+                    format!(
+                        "Downloaded {}: 100% ({downloaded}/{total}) at {speed}",
+                        self.label
+                    )
+                } else {
+                    format!(
+                        "Downloading {}: {:>5.1}% ({downloaded}/{total}) at {speed}",
+                        self.label, percent
+                    )
+                }
+            }
+            _ => {
+                if finished {
+                    format!("Downloaded {}: {downloaded} at {speed}", self.label)
+                } else {
+                    format!("Downloading {}: {downloaded} at {speed}", self.label)
+                }
+            }
+        };
+
+        let mut stderr = std::io::stderr().lock();
+        {
+            let _ = write!(stderr, "\r\x1b[2K{line}");
+            if finished {
+                let _ = writeln!(stderr);
+            }
+        }
+        let _ = stderr.flush();
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", bytes, UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 async fn read_metadata(path: &Path) -> Result<Option<CachedImageMetadata>> {
@@ -168,7 +279,7 @@ mod tests {
     use sha2::Digest;
     use tempfile::tempdir;
 
-    use super::{ensure_image_with_base_url, image_config_for, parse_sha256s};
+    use super::{ensure_image_with_base_url, format_bytes, image_config_for, parse_sha256s};
     use crate::state::GuestArch;
 
     #[test]
@@ -192,6 +303,13 @@ mod tests {
             parse_sha256s(manifest, "ubuntu-24.04-server-cloudimg-arm64.img").expect("sha"),
             "abc123"
         );
+    }
+
+    #[test]
+    fn formats_bytes_for_progress_output() {
+        assert_eq!(format_bytes(999), "999 B");
+        assert_eq!(format_bytes(1024), "1.0 KiB");
+        assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MiB");
     }
 
     #[tokio::test]

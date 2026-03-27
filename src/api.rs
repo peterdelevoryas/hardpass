@@ -17,12 +17,12 @@ pub struct Hardpass {
 impl Hardpass {
     pub async fn load() -> Result<Self> {
         let state = HardpassState::load().await?;
-        Ok(Self::from_state(state))
+        Self::from_state(state).await
     }
 
     pub async fn with_root(root: impl AsRef<Path>) -> Result<Self> {
         let state = HardpassState::load_with_root(root.as_ref().to_path_buf()).await?;
-        Ok(Self::from_state(state))
+        Self::from_state(state).await
     }
 
     pub async fn doctor(&self) -> Result<()> {
@@ -44,10 +44,12 @@ impl Hardpass {
         })
     }
 
-    fn from_state(state: HardpassState) -> Self {
-        Self {
+    async fn from_state(state: HardpassState) -> Result<Self> {
+        let instance = Self {
             manager: Arc::new(InstanceManager::new(state)),
-        }
+        };
+        instance.manager.auto_configure_ssh_if_enabled().await;
+        Ok(instance)
     }
 }
 
