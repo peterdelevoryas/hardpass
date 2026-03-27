@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use hardpass::{AccelMode, Hardpass, InstanceStatus, Vm, VmSpec, VmSshInfo};
-use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::task::JoinSet;
@@ -26,9 +25,9 @@ async fn e2e_vm_stress() -> Result<()> {
     ensure_ci_kvm_available()?;
 
     let profile = Profile::from_env()?;
-    let root = TestRoot::new()?;
-    let hardpass = Hardpass::with_root(root.path()).await?;
-    print_test_banner(root.path(), profile);
+    let hardpass_home = hardpass_home_for_current_env()?;
+    let hardpass = Hardpass::load().await?;
+    print_test_banner(&hardpass_home, profile);
     hardpass.doctor().await?;
 
     let guest_exerciser_source = guest_exerciser_source_path();
@@ -46,13 +45,13 @@ async fn e2e_vm_stress() -> Result<()> {
             created_names.push(name);
             created_vms.push(vm);
         }
-        print_watch_instructions(root.path(), &created_names);
+        print_watch_instructions(&hardpass_home, &created_names);
         run_profile(created_vms, guest_exerciser_source, profile).await
     }
     .await;
 
     if result.is_err() {
-        print_serial_log_tails(root.path(), &created_names).await;
+        print_serial_log_tails(&hardpass_home, &created_names).await;
     }
 
     let cleanup = cleanup_vms(&hardpass, &created_names).await;
@@ -453,10 +452,7 @@ fn print_test_banner(root: &Path, profile: Profile) {
     ));
     log_test(&format!("Hardpass home: {}", root.display()));
     log_test("run with --nocapture to see these progress messages");
-    log_test(&format!(
-        "watch instances with: HARDPASS_HOME={} cargo run -- list",
-        shell_quote(&root.display().to_string())
-    ));
+    log_test(&format!("watch instances with: cargo run -- list"));
 }
 
 fn print_watch_instructions(root: &Path, names: &[String]) {
@@ -464,13 +460,12 @@ fn print_watch_instructions(root: &Path, names: &[String]) {
         return;
     }
     log_test(&format!("created VMs: {}", names.join(", ")));
-    let home = shell_quote(&root.display().to_string());
     log_test(&format!(
-        "inspect one VM with: HARDPASS_HOME={home} cargo run -- info {}",
+        "inspect one VM with: cargo run -- info {}",
         names[0]
     ));
     log_test(&format!(
-        "SSH into one VM with: HARDPASS_HOME={home} cargo run -- ssh {}",
+        "SSH into one VM with: cargo run -- ssh {}",
         names[0]
     ));
     log_test(&format!(
@@ -625,23 +620,10 @@ fn running_in_github_actions() -> bool {
     std::env::var_os("GITHUB_ACTIONS").is_some()
 }
 
-enum TestRoot {
-    Persistent(PathBuf),
-    Temp(TempDir),
-}
-
-impl TestRoot {
-    fn new() -> Result<Self> {
-        match std::env::var_os("HARDPASS_E2E_ROOT") {
-            Some(path) => Ok(Self::Persistent(PathBuf::from(path))),
-            None => Ok(Self::Temp(tempfile::tempdir()?)),
-        }
+fn hardpass_home_for_current_env() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("HARDPASS_HOME") {
+        return Ok(PathBuf::from(path));
     }
-
-    fn path(&self) -> &Path {
-        match self {
-            Self::Persistent(path) => path.as_path(),
-            Self::Temp(dir) => dir.path(),
-        }
-    }
+    let home = dirs::home_dir().context("resolve home directory for hardpass tests")?;
+    Ok(home.join(".hardpass"))
 }

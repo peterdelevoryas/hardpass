@@ -10,9 +10,6 @@ on:
 permissions:
   contents: read
 
-env:
-  HARDPASS_E2E_ROOT: ${{ github.workspace }}/.cache/hardpass-e2e
-
 jobs:
   e2e-pr:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -29,7 +26,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/cache@v4
         with:
-          path: ${{ env.HARDPASS_E2E_ROOT }}/images
+          path: ~/.hardpass/images
           key: ${{ runner.os }}-hardpass-e2e-images-v1
       - name: Enable KVM Access
         run: |
@@ -51,19 +48,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86 qemu-utils openssh-client
-      - name: Prepare E2E Root
+      - name: Prepare Hardpass Home
         run: |
-          mkdir -p "$HARDPASS_E2E_ROOT"
-          rm -rf "$HARDPASS_E2E_ROOT/instances" "$HARDPASS_E2E_ROOT/locks" "$HARDPASS_E2E_ROOT/artifacts"
+          mkdir -p "$HOME/.hardpass"
+          rm -rf "$HOME/.hardpass/instances" "$HOME/.hardpass/locks"
       - name: Run E2E Test
         run: cargo test --locked --test e2e_vm_stress -- --ignored --nocapture
       - name: Collect Serial Logs
         if: failure()
         run: |
           mkdir -p "$RUNNER_TEMP/hardpass-serial-logs"
-          if [ -d "$HARDPASS_E2E_ROOT/instances" ]; then
-            find "$HARDPASS_E2E_ROOT/instances" -name serial.log -print0 | while IFS= read -r -d '' log; do
-              rel="${log#$HARDPASS_E2E_ROOT/instances/}"
+          if [ -d "$HOME/.hardpass/instances" ]; then
+            find "$HOME/.hardpass/instances" -name serial.log -print0 | while IFS= read -r -d '' log; do
+              rel="${log#$HOME/.hardpass/instances/}"
               safe="${rel//\//__}"
               cp "$log" "$RUNNER_TEMP/hardpass-serial-logs/$safe"
             done
@@ -91,7 +88,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/cache@v4
         with:
-          path: ${{ env.HARDPASS_E2E_ROOT }}/images
+          path: ~/.hardpass/images
           key: ${{ runner.os }}-hardpass-e2e-images-v1
       - name: Enable KVM Access
         run: |
@@ -113,19 +110,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86 qemu-utils openssh-client
-      - name: Prepare E2E Root
+      - name: Prepare Hardpass Home
         run: |
-          mkdir -p "$HARDPASS_E2E_ROOT"
-          rm -rf "$HARDPASS_E2E_ROOT/instances" "$HARDPASS_E2E_ROOT/locks" "$HARDPASS_E2E_ROOT/artifacts"
+          mkdir -p "$HOME/.hardpass"
+          rm -rf "$HOME/.hardpass/instances" "$HOME/.hardpass/locks"
       - name: Run E2E Stress Test
         run: cargo test --locked --test e2e_vm_stress -- --ignored --nocapture
       - name: Collect Serial Logs
         if: failure()
         run: |
           mkdir -p "$RUNNER_TEMP/hardpass-serial-logs"
-          if [ -d "$HARDPASS_E2E_ROOT/instances" ]; then
-            find "$HARDPASS_E2E_ROOT/instances" -name serial.log -print0 | while IFS= read -r -d '' log; do
-              rel="${log#$HARDPASS_E2E_ROOT/instances/}"
+          if [ -d "$HOME/.hardpass/instances" ]; then
+            find "$HOME/.hardpass/instances" -name serial.log -print0 | while IFS= read -r -d '' log; do
+              rel="${log#$HOME/.hardpass/instances/}"
               safe="${rel//\//__}"
               cp "$log" "$RUNNER_TEMP/hardpass-serial-logs/$safe"
             done

@@ -143,6 +143,8 @@ The heavier GitHub Actions e2e test is also opt-in locally on macOS and Linux ho
 HARDPASS_REAL_QEMU_TEST=1 cargo test --test e2e_vm_stress -- --ignored --nocapture
 ```
 
+Both real-QEMU tests use the current `HOME` and the normal Hardpass state at `~/.hardpass`, so they share the default image cache and exercise the same SSH-config behavior a user would get in CI. While they run, you can inspect them with ordinary `cargo run -- list`, `cargo run -- info <name>`, and `cargo run -- ssh <name>`.
+
 In GitHub Actions, the e2e workflow requires `/dev/kvm` and intentionally fails instead of falling back to TCG.
 
 Set `HARDPASS_E2E_PROFILE=stress` to run the 2-VM profile locally.

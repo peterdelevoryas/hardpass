@@ -1,6 +1,5 @@
 use anyhow::Result;
 use hardpass::{Hardpass, InstanceStatus, VmSpec};
-use tempfile::tempdir;
 
 #[tokio::test]
 #[ignore = "requires QEMU and HARDPASS_REAL_QEMU_TEST=1"]
@@ -10,8 +9,7 @@ async fn library_api_smoke() -> Result<()> {
         return Ok(());
     }
 
-    let root = tempdir()?;
-    let hardpass = Hardpass::with_root(root.path()).await?;
+    let hardpass = Hardpass::load().await?;
     hardpass.doctor().await?;
 
     let name = format!("api_smoke_{}", std::process::id());
