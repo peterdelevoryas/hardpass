@@ -31,6 +31,10 @@ jobs:
         with:
           path: ${{ env.HARDPASS_E2E_ROOT }}/images
           key: ${{ runner.os }}-hardpass-e2e-images-v1
+      - name: Enable KVM Access
+        run: |
+          sudo chmod 666 /dev/kvm
+          ls -l /dev/kvm
       - name: Require KVM
         run: |
           if [ ! -e /dev/kvm ]; then
@@ -89,6 +93,10 @@ jobs:
         with:
           path: ${{ env.HARDPASS_E2E_ROOT }}/images
           key: ${{ runner.os }}-hardpass-e2e-images-v1
+      - name: Enable KVM Access
+        run: |
+          sudo chmod 666 /dev/kvm
+          ls -l /dev/kvm
       - name: Require KVM
         run: |
           if [ ! -e /dev/kvm ]; then
