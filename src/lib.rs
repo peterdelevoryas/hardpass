@@ -12,7 +12,7 @@ mod state;
 
 use anyhow::Result;
 
-pub use api::{Hardpass, RunningVm, Vm, VmSpec};
+pub use api::{Hardpass, Vm, VmSpec};
 use cli::{Args, Command, SshConfigCommand};
 use instance::InstanceManager;
 pub use instance::{VmInfo, VmSshInfo};

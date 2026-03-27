@@ -15,7 +15,6 @@ async fn library_api_smoke() -> Result<()> {
     hardpass.doctor().await?;
 
     let name = format!("api_smoke_{}", std::process::id());
-    let vm_handle = hardpass.vm(&name)?;
     let result = async {
         let vm = hardpass
             .create(
@@ -27,20 +26,20 @@ async fn library_api_smoke() -> Result<()> {
             )
             .await?;
 
-        let running = vm.start().await?;
-        let info = running.wait_for_ssh().await?;
+        vm.start().await?;
+        let info = vm.wait_for_ssh().await?;
         assert_eq!(info.status, InstanceStatus::Running);
 
-        let output = running.exec_checked(["uname", "-m"]).await?;
+        let output = vm.exec_checked(["uname", "-m"]).await?;
         assert_eq!(output.stdout.trim(), expected_guest_machine());
 
-        let vm = running.stop().await?;
+        vm.stop().await?;
         assert_eq!(vm.status().await?, InstanceStatus::Stopped);
         Ok::<(), anyhow::Error>(())
     }
     .await;
 
-    let cleanup = vm_handle.delete().await;
+    let cleanup = hardpass.vm(&name)?.delete().await;
     match (result, cleanup) {
         (Err(err), _) => Err(err),
         (Ok(()), Err(err)) => Err(err),

@@ -152,13 +152,13 @@ async fn run_profile(vms: Vec<Vm>, guest_exerciser: PathBuf, profile: Profile) -
 }
 
 async fn exercise_vm(vm: Vm, guest_exerciser: &Path, profile: Profile) -> Result<()> {
-    let running = vm.start().await?;
-    let info = running.wait_for_ssh().await?;
+    vm.start().await?;
+    let info = vm.wait_for_ssh().await?;
     if info.status != InstanceStatus::Running {
         bail!("{} did not reach running state", info.name);
     }
 
-    let machine = run_remote_command_checked(&running, ["uname", "-m"])
+    let machine = run_remote_command_checked(&vm, ["uname", "-m"])
         .await?
         .stdout;
     if machine.trim() != expected_guest_machine() {
@@ -169,9 +169,9 @@ async fn exercise_vm(vm: Vm, guest_exerciser: &Path, profile: Profile) -> Result
         );
     }
 
-    run_apt_step(&running, "sudo apt-get update").await?;
+    run_apt_step(&vm, "sudo apt-get update").await?;
     run_apt_step(
-        &running,
+        &vm,
         &format!(
             "sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {}",
             profile.packages.join(" ")
@@ -179,22 +179,22 @@ async fn exercise_vm(vm: Vm, guest_exerciser: &Path, profile: Profile) -> Result
     )
     .await?;
 
-    run_remote_shell_checked(&running, "dpkg -s jq >/dev/null && jq --version >/dev/null").await?;
+    run_remote_shell_checked(&vm, "dpkg -s jq >/dev/null && jq --version >/dev/null").await?;
     if profile.run_stress_ng {
         run_remote_shell_checked(
-            &running,
+            &vm,
             "dpkg -s stress-ng >/dev/null && stress-ng --version >/dev/null",
         )
         .await?;
         run_remote_shell_checked(
-            &running,
+            &vm,
             "stress-ng --cpu 1 --timeout 10 --metrics-brief >/tmp/hardpass-e2e/stress-ng.log",
         )
         .await?;
     }
 
     upload_guest_exerciser(&info.ssh, guest_exerciser).await?;
-    let summary = run_guest_exerciser(&running, profile).await?;
+    let summary = run_guest_exerciser(&vm, profile).await?;
     if summary.cpu_iterations == 0 {
         bail!("{} reported zero cpu iterations", info.name);
     }
@@ -214,7 +214,7 @@ async fn exercise_vm(vm: Vm, guest_exerciser: &Path, profile: Profile) -> Result
         );
     }
 
-    let vm = running.stop().await?;
+    vm.stop().await?;
     if vm.status().await? != InstanceStatus::Stopped {
         bail!("{} did not stop cleanly", vm.name());
     }
@@ -228,10 +228,7 @@ struct GuestSummary {
     tcp_round_trips: u64,
 }
 
-async fn run_guest_exerciser(
-    running: &hardpass::RunningVm,
-    profile: Profile,
-) -> Result<GuestSummary> {
+async fn run_guest_exerciser(vm: &Vm, profile: Profile) -> Result<GuestSummary> {
     let command = vec![
         REMOTE_EXERCISER_PATH.to_string(),
         "--duration-secs".to_string(),
@@ -241,7 +238,7 @@ async fn run_guest_exerciser(
         "--tcp-round-trips".to_string(),
         profile.tcp_round_trips.to_string(),
     ];
-    let output = running.exec(command).await?;
+    let output = vm.exec(command).await?;
     if !output.status.success() {
         bail!(
             "guest exerciser failed with status {}:\nstdout:\n{}\nstderr:\n{}",
@@ -273,10 +270,10 @@ async fn run_guest_exerciser(
     })
 }
 
-async fn run_apt_step(running: &hardpass::RunningVm, script: &str) -> Result<()> {
+async fn run_apt_step(vm: &Vm, script: &str) -> Result<()> {
     let mut last_error = None;
     for attempt in 1..=APT_RETRY_ATTEMPTS {
-        let output = running.exec(["sh", "-lc", script]).await?;
+        let output = vm.exec(["sh", "-lc", script]).await?;
         if output.status.success() {
             return Ok(());
         }
@@ -297,15 +294,12 @@ async fn run_apt_step(running: &hardpass::RunningVm, script: &str) -> Result<()>
     );
 }
 
-async fn run_remote_command_checked<I, S>(
-    running: &hardpass::RunningVm,
-    command: I,
-) -> Result<hardpass::ExecOutput>
+async fn run_remote_command_checked<I, S>(vm: &Vm, command: I) -> Result<hardpass::ExecOutput>
 where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
-    let output = running.exec(command).await?;
+    let output = vm.exec(command).await?;
     if output.status.success() {
         Ok(output)
     } else {
@@ -318,11 +312,8 @@ where
     }
 }
 
-async fn run_remote_shell_checked(
-    running: &hardpass::RunningVm,
-    script: &str,
-) -> Result<hardpass::ExecOutput> {
-    run_remote_command_checked(running, ["sh", "-lc", script]).await
+async fn run_remote_shell_checked(vm: &Vm, script: &str) -> Result<hardpass::ExecOutput> {
+    run_remote_command_checked(vm, ["sh", "-lc", script]).await
 }
 
 async fn upload_guest_exerciser(ssh: &VmSshInfo, local_path: &Path) -> Result<()> {

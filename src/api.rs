@@ -166,9 +166,9 @@ impl Vm {
         &self.name
     }
 
-    pub async fn start(self) -> Result<RunningVm> {
+    pub async fn start(&self) -> Result<()> {
         self.manager.start_silent(&self.name).await?;
-        Ok(RunningVm { vm: self })
+        Ok(())
     }
 
     pub async fn info(&self) -> Result<VmInfo> {
@@ -179,26 +179,8 @@ impl Vm {
         self.manager.status(&self.name).await
     }
 
-    pub async fn delete(self) -> Result<()> {
-        self.manager.delete_silent(&self.name).await
-    }
-}
-
-pub struct RunningVm {
-    vm: Vm,
-}
-
-impl RunningVm {
-    pub fn name(&self) -> &str {
-        self.vm.name()
-    }
-
     pub async fn wait_for_ssh(&self) -> Result<VmInfo> {
-        self.vm.manager.wait_for_ssh_ready(&self.vm.name).await
-    }
-
-    pub async fn info(&self) -> Result<VmInfo> {
-        self.vm.info().await
+        self.manager.wait_for_ssh_ready(&self.name).await
     }
 
     pub async fn exec<I, S>(&self, command: I) -> Result<ExecOutput>
@@ -207,7 +189,7 @@ impl RunningVm {
         S: Into<String>,
     {
         let command = command.into_iter().map(Into::into).collect::<Vec<_>>();
-        self.vm.manager.exec_capture(&self.vm.name, &command).await
+        self.manager.exec_capture(&self.name, &command).await
     }
 
     pub async fn exec_checked<I, S>(&self, command: I) -> Result<ExecOutput>
@@ -216,15 +198,14 @@ impl RunningVm {
         S: Into<String>,
     {
         let command = command.into_iter().map(Into::into).collect::<Vec<_>>();
-        self.vm.manager.exec_checked(&self.vm.name, &command).await
+        self.manager.exec_checked(&self.name, &command).await
     }
 
-    pub async fn stop(self) -> Result<Vm> {
-        self.vm.manager.stop_silent(&self.vm.name).await?;
-        Ok(self.vm)
+    pub async fn stop(&self) -> Result<()> {
+        self.manager.stop_silent(&self.name).await
     }
 
-    pub async fn delete(self) -> Result<()> {
-        self.vm.manager.delete_silent(&self.vm.name).await
+    pub async fn delete(&self) -> Result<()> {
+        self.manager.delete_silent(&self.name).await
     }
 }
