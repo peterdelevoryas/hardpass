@@ -1,4 +1,3 @@
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -11,8 +10,10 @@ use tokio::process::Command;
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 
-const REMOTE_WORK_DIR: &str = "/tmp/hardpass-e2e";
-const REMOTE_EXERCISER_PATH: &str = "/tmp/hardpass-e2e/guest-exerciser";
+const REMOTE_MANIFEST_PATH: &str = "/tmp/hardpass-e2e/guest-exerciser/Cargo.toml";
+const REMOTE_SOURCE_PATH: &str = "/tmp/hardpass-e2e/guest-exerciser/src/main.rs";
+const REMOTE_EXERCISER_PATH: &str =
+    "/tmp/hardpass-e2e/guest-exerciser/target/release/guest-exerciser";
 const APT_RETRY_ATTEMPTS: usize = 3;
 
 #[tokio::test]
@@ -22,26 +23,22 @@ async fn e2e_vm_stress() -> Result<()> {
         eprintln!("skipping e2e_vm_stress; set HARDPASS_REAL_QEMU_TEST=1 to enable");
         return Ok(());
     }
-    if !cfg!(target_os = "linux") {
-        eprintln!(
-            "skipping e2e_vm_stress; host-built guest exerciser currently requires a Linux host"
-        );
-        return Ok(());
-    }
     ensure_ci_kvm_available()?;
 
     let profile = Profile::from_env()?;
     let root = TestRoot::new()?;
     let hardpass = Hardpass::with_root(root.path()).await?;
+    print_test_banner(root.path(), profile);
     hardpass.doctor().await?;
 
-    let guest_exerciser = build_guest_exerciser(root.path()).await?;
+    let guest_exerciser_source = guest_exerciser_source_path();
     let mut created_names = Vec::new();
     let mut created_vms = Vec::new();
 
     let result = async {
         for index in 0..profile.vm_count {
             let name = vm_name(profile.slug, index);
+            log_test(&format!("creating {name}"));
             let vm = hardpass
                 .create(vm_spec(&name))
                 .await
@@ -49,7 +46,8 @@ async fn e2e_vm_stress() -> Result<()> {
             created_names.push(name);
             created_vms.push(vm);
         }
-        run_profile(created_vms, guest_exerciser, profile).await
+        print_watch_instructions(root.path(), &created_names);
+        run_profile(created_vms, guest_exerciser_source, profile).await
     }
     .await;
 
@@ -152,11 +150,20 @@ async fn run_profile(vms: Vec<Vm>, guest_exerciser: PathBuf, profile: Profile) -
 }
 
 async fn exercise_vm(vm: Vm, guest_exerciser: &Path, profile: Profile) -> Result<()> {
+    log_vm(vm.name(), "starting VM");
     vm.start().await?;
+    log_vm(vm.name(), "waiting for SSH");
     let info = vm.wait_for_ssh().await?;
     if info.status != InstanceStatus::Running {
         bail!("{} did not reach running state", info.name);
     }
+    log_vm(
+        vm.name(),
+        &format!(
+            "SSH ready at {}@{}:{}",
+            info.ssh.user, info.ssh.host, info.ssh.port
+        ),
+    );
 
     let machine = run_remote_command_checked(&vm, ["uname", "-m"])
         .await?
@@ -169,18 +176,26 @@ async fn exercise_vm(vm: Vm, guest_exerciser: &Path, profile: Profile) -> Result
         );
     }
 
+    log_vm(vm.name(), "running apt-get update");
     run_apt_step(&vm, "sudo apt-get update").await?;
+    log_vm(vm.name(), "installing guest packages");
     run_apt_step(
         &vm,
         &format!(
             "sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {}",
-            profile.packages.join(" ")
+            guest_packages(profile).join(" ")
         ),
     )
     .await?;
 
     run_remote_shell_checked(&vm, "dpkg -s jq >/dev/null && jq --version >/dev/null").await?;
+    run_remote_shell_checked(
+        &vm,
+        "rustc --version >/dev/null && cargo --version >/dev/null",
+    )
+    .await?;
     if profile.run_stress_ng {
+        log_vm(vm.name(), "running stress-ng smoke workload");
         run_remote_shell_checked(
             &vm,
             "dpkg -s stress-ng >/dev/null && stress-ng --version >/dev/null",
@@ -193,7 +208,15 @@ async fn exercise_vm(vm: Vm, guest_exerciser: &Path, profile: Profile) -> Result
         .await?;
     }
 
-    upload_guest_exerciser(&info.ssh, guest_exerciser).await?;
+    log_vm(vm.name(), "uploading guest exerciser sources");
+    upload_guest_exerciser_project(&info.ssh, guest_exerciser).await?;
+    log_vm(vm.name(), "building guest exerciser inside the VM");
+    run_remote_shell_checked(
+        &vm,
+        &format!("cargo build --release --manifest-path {REMOTE_MANIFEST_PATH}"),
+    )
+    .await?;
+    log_vm(vm.name(), "running guest exerciser");
     let summary = run_guest_exerciser(&vm, profile).await?;
     if summary.cpu_iterations == 0 {
         bail!("{} reported zero cpu iterations", info.name);
@@ -213,11 +236,20 @@ async fn exercise_vm(vm: Vm, guest_exerciser: &Path, profile: Profile) -> Result
             profile.tcp_round_trips
         );
     }
+    log_vm(
+        vm.name(),
+        &format!(
+            "guest exerciser completed: cpu_iterations={} io_bytes={} tcp_round_trips={}",
+            summary.cpu_iterations, summary.io_bytes, summary.tcp_round_trips
+        ),
+    );
 
+    log_vm(vm.name(), "stopping VM");
     vm.stop().await?;
     if vm.status().await? != InstanceStatus::Stopped {
         bail!("{} did not stop cleanly", vm.name());
     }
+    log_vm(vm.name(), "VM stopped cleanly");
     Ok(())
 }
 
@@ -238,7 +270,15 @@ async fn run_guest_exerciser(vm: &Vm, profile: Profile) -> Result<GuestSummary> 
         "--tcp-round-trips".to_string(),
         profile.tcp_round_trips.to_string(),
     ];
-    let output = vm.exec(command).await?;
+    let heartbeat = spawn_progress_heartbeat(
+        vm.name().to_string(),
+        "guest exerciser",
+        Duration::from_secs(5),
+    );
+    let output = vm.exec(command).await;
+    heartbeat.abort();
+    let _ = heartbeat.await;
+    let output = output?;
     if !output.status.success() {
         bail!(
             "guest exerciser failed with status {}:\nstdout:\n{}\nstderr:\n{}",
@@ -247,6 +287,8 @@ async fn run_guest_exerciser(vm: &Vm, profile: Profile) -> Result<GuestSummary> 
             output.stderr.trim()
         );
     }
+    print_captured_output(vm.name(), "guest exerciser stdout", &output.stdout);
+    print_captured_output(vm.name(), "guest exerciser stderr", &output.stderr);
 
     let payload: serde_json::Value = serde_json::from_str(output.stdout.trim())
         .with_context(|| format!("parse guest exerciser output: {}", output.stdout.trim()))?;
@@ -316,20 +358,35 @@ async fn run_remote_shell_checked(vm: &Vm, script: &str) -> Result<hardpass::Exe
     run_remote_command_checked(vm, ["sh", "-lc", script]).await
 }
 
-async fn upload_guest_exerciser(ssh: &VmSshInfo, local_path: &Path) -> Result<()> {
+async fn upload_guest_exerciser_project(ssh: &VmSshInfo, source_path: &Path) -> Result<()> {
+    upload_remote_bytes(
+        ssh,
+        guest_exerciser_manifest().into_bytes(),
+        REMOTE_MANIFEST_PATH,
+    )
+    .await?;
+    upload_remote_file(ssh, source_path, REMOTE_SOURCE_PATH).await
+}
+
+async fn upload_remote_file(ssh: &VmSshInfo, local_path: &Path, remote_path: &str) -> Result<()> {
     let payload = tokio::fs::read(local_path)
         .await
         .with_context(|| format!("read {}", local_path.display()))?;
-    let remote_command = format!(
-        "mkdir -p {REMOTE_WORK_DIR} && cat > {REMOTE_EXERCISER_PATH} && chmod +x {REMOTE_EXERCISER_PATH}"
-    );
+    upload_remote_bytes(ssh, payload, remote_path).await
+}
+
+async fn upload_remote_bytes(ssh: &VmSshInfo, payload: Vec<u8>, remote_path: &str) -> Result<()> {
+    let remote_dir = Path::new(remote_path)
+        .parent()
+        .context("remote path missing parent directory")?
+        .display()
+        .to_string();
+    let remote_command = format!("mkdir -p {remote_dir} && cat > {remote_path}");
 
     let mut child = Command::new("ssh")
         .args(ssh_args(ssh))
         .arg(format!("{}@{}", ssh.user, ssh.host))
-        .arg("sh")
-        .arg("-lc")
-        .arg(remote_command)
+        .arg(format!("sh -lc {}", shell_quote(&remote_command)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -359,6 +416,116 @@ async fn upload_guest_exerciser(ssh: &VmSshInfo, local_path: &Path) -> Result<()
     }
 }
 
+fn guest_exerciser_source_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("guest_exerciser.rs")
+}
+
+fn guest_exerciser_manifest() -> String {
+    r#"[package]
+name = "guest-exerciser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+"#
+    .to_string()
+}
+
+fn guest_packages(profile: Profile) -> Vec<&'static str> {
+    let mut packages = vec!["build-essential", "cargo", "jq", "rustc"];
+    packages.extend(profile.packages);
+    packages.sort_unstable();
+    packages.dedup();
+    packages
+}
+
+fn print_test_banner(root: &Path, profile: Profile) {
+    log_test(&format!(
+        "starting e2e profile={} vm_count={} duration_secs={} io_mib={} tcp_round_trips={}",
+        profile.slug,
+        profile.vm_count,
+        profile.duration_secs,
+        profile.io_mib,
+        profile.tcp_round_trips
+    ));
+    log_test(&format!("Hardpass home: {}", root.display()));
+    log_test("run with --nocapture to see these progress messages");
+    log_test(&format!(
+        "watch instances with: HARDPASS_HOME={} cargo run -- list",
+        shell_quote(&root.display().to_string())
+    ));
+}
+
+fn print_watch_instructions(root: &Path, names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    log_test(&format!("created VMs: {}", names.join(", ")));
+    let home = shell_quote(&root.display().to_string());
+    log_test(&format!(
+        "inspect one VM with: HARDPASS_HOME={home} cargo run -- info {}",
+        names[0]
+    ));
+    log_test(&format!(
+        "SSH into one VM with: HARDPASS_HOME={home} cargo run -- ssh {}",
+        names[0]
+    ));
+    log_test(&format!(
+        "watch serial console with: tail -f {}",
+        shell_quote(
+            &root
+                .join("instances")
+                .join(&names[0])
+                .join("serial.log")
+                .display()
+                .to_string()
+        )
+    ));
+}
+
+fn print_captured_output(vm_name: &str, label: &str, output: &str) {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    for line in trimmed.lines() {
+        eprintln!("[hardpass-e2e {vm_name}] {label}: {line}");
+    }
+}
+
+fn log_test(message: &str) {
+    eprintln!("[hardpass-e2e] {message}");
+}
+
+fn log_vm(name: &str, message: &str) {
+    eprintln!("[hardpass-e2e {name}] {message}");
+}
+
+fn spawn_progress_heartbeat(
+    vm_name: String,
+    label: &'static str,
+    interval: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut elapsed = interval;
+        loop {
+            sleep(interval).await;
+            log_vm(
+                &vm_name,
+                &format!("{label} still running ({}s elapsed)", elapsed.as_secs()),
+            );
+            elapsed += interval;
+        }
+    })
+}
+
+fn shell_quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\"'\"'"))
+}
+
 fn ssh_args(ssh: &VmSshInfo) -> Vec<String> {
     vec![
         "-i".to_string(),
@@ -376,39 +543,6 @@ fn ssh_args(ssh: &VmSshInfo) -> Vec<String> {
         "-o".to_string(),
         "BatchMode=yes".to_string(),
     ]
-}
-
-async fn build_guest_exerciser(root: &Path) -> Result<PathBuf> {
-    let output_dir = root.join("artifacts");
-    tokio::fs::create_dir_all(&output_dir).await?;
-    let output_path = output_dir.join("guest-exerciser");
-    let source_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("guest_exerciser.rs");
-
-    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"));
-    let output = Command::new(rustc)
-        .arg("--edition=2024")
-        .arg("-O")
-        .arg("-C")
-        .arg("debuginfo=0")
-        .arg("-o")
-        .arg(&output_path)
-        .arg(&source_path)
-        .output()
-        .await
-        .with_context(|| format!("compile {}", source_path.display()))?;
-    if output.status.success() {
-        Ok(output_path)
-    } else {
-        bail!(
-            "rustc failed for {}:\nstdout:\n{}\nstderr:\n{}",
-            source_path.display(),
-            String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
-    }
 }
 
 async fn cleanup_vms(hardpass: &Hardpass, names: &[String]) -> Result<()> {

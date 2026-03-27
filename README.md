@@ -134,7 +134,7 @@ The real-QEMU integration smoke test is opt-in:
 HARDPASS_REAL_QEMU_TEST=1 cargo test --test library_api_smoke -- --ignored
 ```
 
-The heavier GitHub Actions e2e test is also opt-in locally on Linux hosts:
+The heavier GitHub Actions e2e test is also opt-in locally on macOS and Linux hosts:
 
 ```bash
 HARDPASS_REAL_QEMU_TEST=1 cargo test --test e2e_vm_stress -- --ignored --nocapture

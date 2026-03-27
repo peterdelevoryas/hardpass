@@ -96,10 +96,11 @@ pub async fn exec(config: &SshConfig, command: &[String]) -> Result<()> {
 }
 
 pub async fn exec_capture(config: &SshConfig, command: &[String]) -> Result<ExecOutput> {
+    let remote_command = render_remote_command(command);
     let output = Command::new("ssh")
         .args(common_ssh_args(config, true))
         .arg(format!("{}@{}", config.user, config.host))
-        .args(command)
+        .arg(&remote_command)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -161,4 +162,45 @@ fn common_ssh_args(config: &SshConfig, batch_mode: bool) -> Vec<String> {
         args.extend(["-o".to_string(), "BatchMode=yes".to_string()]);
     }
     args
+}
+
+fn render_remote_command(command: &[String]) -> String {
+    command
+        .iter()
+        .map(|arg| shell_quote(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{render_remote_command, shell_quote};
+
+    #[test]
+    fn shell_quote_escapes_single_quotes() {
+        assert_eq!(shell_quote("it's ready"), r#"'it'"'"'s ready'"#);
+    }
+
+    #[test]
+    fn render_remote_command_preserves_shell_script_argument() {
+        let command = vec![
+            "sh".to_string(),
+            "-lc".to_string(),
+            "sudo apt-get update".to_string(),
+        ];
+        assert_eq!(
+            render_remote_command(&command),
+            "'sh' '-lc' 'sudo apt-get update'"
+        );
+    }
+
+    #[test]
+    fn render_remote_command_preserves_empty_arguments() {
+        let command = vec!["printf".to_string(), "".to_string(), "done".to_string()];
+        assert_eq!(render_remote_command(&command), "'printf' '' 'done'");
+    }
 }

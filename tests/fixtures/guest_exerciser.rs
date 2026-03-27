@@ -24,9 +24,25 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let config = parse_args()?;
+    eprintln!(
+        "guest-exerciser: starting duration_secs={} io_mib={} tcp_round_trips={}",
+        config.duration_secs, config.io_mib, config.tcp_round_trips
+    );
+    eprintln!("guest-exerciser: starting cpu phase");
     let cpu = run_cpu_phase(config.duration_secs)?;
+    eprintln!(
+        "guest-exerciser: cpu phase complete threads={} iterations={}",
+        cpu.threads, cpu.iterations
+    );
+    eprintln!("guest-exerciser: starting io phase");
     let io = run_io_phase(config.io_mib)?;
+    eprintln!("guest-exerciser: io phase complete bytes={}", io.bytes);
+    eprintln!("guest-exerciser: starting tcp phase");
     let tcp = run_tcp_phase(config.tcp_round_trips)?;
+    eprintln!(
+        "guest-exerciser: tcp phase complete round_trips={}",
+        tcp.round_trips
+    );
     println!(
         "{{\"status\":\"ok\",\"cpu_threads\":{},\"cpu_iterations\":{},\"io_bytes\":{},\"tcp_round_trips\":{}}}",
         cpu.threads, cpu.iterations, io.bytes, tcp.round_trips
