@@ -452,7 +452,7 @@ fn print_test_banner(root: &Path, profile: Profile) {
     ));
     log_test(&format!("Hardpass home: {}", root.display()));
     log_test("run with --nocapture to see these progress messages");
-    log_test(&format!("watch instances with: cargo run -- list"));
+    log_test("watch instances with: cargo run -- list");
 }
 
 fn print_watch_instructions(root: &Path, names: &[String]) {
