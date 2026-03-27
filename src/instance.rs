@@ -113,7 +113,7 @@ impl InstanceManager {
 
         if cfg!(target_os = "linux") && !Path::new("/dev/kvm").exists() {
             println!(
-                "warn  {:<20} /dev/kvm unavailable; --accel auto will fall back to tcg",
+                "warn  {:<20} /dev/kvm unavailable; hardpass requires KVM on Linux and will fail instead of falling back to TCG",
                 "kvm"
             );
         }

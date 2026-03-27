@@ -1,0 +1,127 @@
+name: E2E
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  HARDPASS_E2E_ROOT: ${{ github.workspace }}/.cache/hardpass-e2e
+
+jobs:
+  e2e-pr:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      HARDPASS_REAL_QEMU_TEST: "1"
+      HARDPASS_E2E_PROFILE: pr
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.HARDPASS_E2E_ROOT }}/images
+          key: ${{ runner.os }}-hardpass-e2e-images-v1
+      - name: Require KVM
+        run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::/dev/kvm is required for hardpass e2e in GitHub Actions. TCG fallback is disabled; use a KVM-enabled runner."
+            exit 1
+          fi
+          if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+            echo "::error::/dev/kvm exists but is not readable/writable by $(whoami). TCG fallback is disabled."
+            ls -l /dev/kvm || true
+            id || true
+            exit 1
+          fi
+      - name: Install Host Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils openssh-client
+      - name: Prepare E2E Root
+        run: |
+          mkdir -p "$HARDPASS_E2E_ROOT"
+          rm -rf "$HARDPASS_E2E_ROOT/instances" "$HARDPASS_E2E_ROOT/locks" "$HARDPASS_E2E_ROOT/artifacts"
+      - name: Run E2E Test
+        run: cargo test --locked --test e2e_vm_stress -- --ignored --nocapture
+      - name: Collect Serial Logs
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/hardpass-serial-logs"
+          if [ -d "$HARDPASS_E2E_ROOT/instances" ]; then
+            find "$HARDPASS_E2E_ROOT/instances" -name serial.log -print0 | while IFS= read -r -d '' log; do
+              rel="${log#$HARDPASS_E2E_ROOT/instances/}"
+              safe="${rel//\//__}"
+              cp "$log" "$RUNNER_TEMP/hardpass-serial-logs/$safe"
+            done
+          fi
+      - name: Upload Serial Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-pr-serial-logs
+          path: ${{ runner.temp }}/hardpass-serial-logs
+          if-no-files-found: ignore
+
+  e2e-stress:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      HARDPASS_REAL_QEMU_TEST: "1"
+      HARDPASS_E2E_PROFILE: stress
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.HARDPASS_E2E_ROOT }}/images
+          key: ${{ runner.os }}-hardpass-e2e-images-v1
+      - name: Require KVM
+        run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::/dev/kvm is required for hardpass e2e in GitHub Actions. TCG fallback is disabled; use a KVM-enabled runner."
+            exit 1
+          fi
+          if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+            echo "::error::/dev/kvm exists but is not readable/writable by $(whoami). TCG fallback is disabled."
+            ls -l /dev/kvm || true
+            id || true
+            exit 1
+          fi
+      - name: Install Host Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils openssh-client
+      - name: Prepare E2E Root
+        run: |
+          mkdir -p "$HARDPASS_E2E_ROOT"
+          rm -rf "$HARDPASS_E2E_ROOT/instances" "$HARDPASS_E2E_ROOT/locks" "$HARDPASS_E2E_ROOT/artifacts"
+      - name: Run E2E Stress Test
+        run: cargo test --locked --test e2e_vm_stress -- --ignored --nocapture
+      - name: Collect Serial Logs
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/hardpass-serial-logs"
+          if [ -d "$HARDPASS_E2E_ROOT/instances" ]; then
+            find "$HARDPASS_E2E_ROOT/instances" -name serial.log -print0 | while IFS= read -r -d '' log; do
+              rel="${log#$HARDPASS_E2E_ROOT/instances/}"
+              safe="${rel//\//__}"
+              cp "$log" "$RUNNER_TEMP/hardpass-serial-logs/$safe"
+            done
+          fi
+      - name: Upload Serial Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-stress-serial-logs
+          path: ${{ runner.temp }}/hardpass-serial-logs
+          if-no-files-found: ignore

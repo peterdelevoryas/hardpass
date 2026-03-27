@@ -22,30 +22,50 @@ pub struct LaunchSpec {
 }
 
 fn launch_accel_attempts(configured: AccelMode) -> Result<Vec<AccelMode>> {
-    let preferred = resolve_accel(configured)?;
-    if configured == AccelMode::Auto && preferred != AccelMode::Tcg {
-        Ok(vec![preferred, AccelMode::Tcg])
-    } else {
-        Ok(vec![preferred])
-    }
+    Ok(vec![resolve_accel(configured)?])
 }
 
 pub fn resolve_accel(configured: AccelMode) -> Result<AccelMode> {
+    resolve_accel_for_env(configured, std::env::consts::OS, linux_kvm_available())
+}
+
+fn resolve_accel_for_env(
+    configured: AccelMode,
+    os: &str,
+    linux_kvm_available: bool,
+) -> Result<AccelMode> {
     match configured {
         AccelMode::Auto => {
-            if cfg!(target_os = "macos") {
+            if os == "macos" {
                 Ok(AccelMode::Hvf)
-            } else if cfg!(target_os = "linux") && Path::new("/dev/kvm").exists() {
+            } else if os == "linux" && linux_kvm_available {
                 Ok(AccelMode::Kvm)
+            } else if os == "linux" {
+                bail!("{}", missing_kvm_error_message())
             } else {
-                Ok(AccelMode::Tcg)
+                bail!(
+                    "automatic acceleration is only supported on macOS (HVF) and Linux with /dev/kvm (KVM)"
+                )
             }
         }
-        AccelMode::Hvf if cfg!(target_os = "macos") => Ok(AccelMode::Hvf),
-        AccelMode::Kvm if cfg!(target_os = "linux") => Ok(AccelMode::Kvm),
-        AccelMode::Tcg => Ok(AccelMode::Tcg),
+        AccelMode::Hvf if os == "macos" => Ok(AccelMode::Hvf),
+        AccelMode::Kvm if os == "linux" && linux_kvm_available => Ok(AccelMode::Kvm),
+        AccelMode::Kvm if os == "linux" => bail!("{}", missing_kvm_error_message()),
+        AccelMode::Tcg => bail!("{}", tcg_disabled_error_message()),
         other => bail!("acceleration mode {other} is not supported on this host"),
     }
+}
+
+fn linux_kvm_available() -> bool {
+    Path::new("/dev/kvm").exists()
+}
+
+fn missing_kvm_error_message() -> &'static str {
+    "Hardpass requires KVM acceleration on Linux, but /dev/kvm is unavailable on this host. Hardpass will not fall back to TCG; run on a KVM-enabled Linux host/runner or choose a different supported accel mode."
+}
+
+fn tcg_disabled_error_message() -> &'static str {
+    "TCG acceleration is disabled in Hardpass. Use KVM on Linux or HVF on macOS instead."
 }
 
 pub fn discover_aarch64_firmware() -> Result<FirmwarePaths> {
@@ -108,7 +128,7 @@ pub async fn create_overlay_disk(base_image: &Path, disk_path: &Path, disk_gib: 
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub fn build_launch_spec(config: &InstanceConfig, paths: &InstancePaths) -> Result<LaunchSpec> {
     build_launch_spec_with_accel(config, paths, resolve_accel(config.accel)?)
 }
@@ -342,8 +362,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        build_launch_spec, discover_aarch64_firmware, launch_accel_attempts, qemu_user_network_arg,
-        resolve_accel,
+        build_launch_spec_with_accel, discover_aarch64_firmware, launch_accel_attempts,
+        missing_kvm_error_message, qemu_user_network_arg, resolve_accel, resolve_accel_for_env,
+        tcg_disabled_error_message,
     };
     use crate::state::{
         AccelMode, CloudInitConfig, GuestArch, ImageConfig, InstanceConfig, InstancePaths,
@@ -401,9 +422,10 @@ mod tests {
     #[test]
     fn x86_launch_spec_contains_expected_args() {
         let paths = InstancePaths::new(PathBuf::from("/tmp/dev"));
-        let spec = build_launch_spec(&config(GuestArch::Amd64), &paths).expect("spec");
+        let spec = build_launch_spec_with_accel(&config(GuestArch::Amd64), &paths, AccelMode::Kvm)
+            .expect("spec");
         let joined = spec.args.join(" ");
-        assert!(joined.contains("q35,accel=tcg"));
+        assert!(joined.contains("q35,accel=kvm"));
         assert!(joined.contains("if=virtio,format=qcow2,file=/tmp/dev/disk.qcow2"));
     }
 
@@ -413,28 +435,52 @@ mod tests {
             return;
         }
         let paths = InstancePaths::new(PathBuf::from("/tmp/dev"));
-        let spec = build_launch_spec(&config(GuestArch::Arm64), &paths).expect("spec");
+        let spec = build_launch_spec_with_accel(&config(GuestArch::Arm64), &paths, AccelMode::Kvm)
+            .expect("spec");
         let joined = spec.args.join(" ");
-        assert!(joined.contains("virt,accel=tcg"));
+        assert!(joined.contains("virt,accel=kvm"));
         assert!(joined.contains("if=pflash,format=raw,unit=1,file=/tmp/dev/firmware.vars.fd"));
     }
 
     #[test]
-    fn auto_accel_attempts_include_tcg_fallback_when_needed() {
+    fn auto_accel_has_single_attempt() {
         let attempts = launch_accel_attempts(AccelMode::Auto).expect("attempts");
-        let preferred = resolve_accel(AccelMode::Auto).expect("preferred accel");
-        if preferred == AccelMode::Tcg {
-            assert_eq!(attempts, vec![AccelMode::Tcg]);
-        } else {
-            assert_eq!(attempts, vec![preferred, AccelMode::Tcg]);
-        }
+        assert_eq!(
+            attempts,
+            vec![resolve_accel(AccelMode::Auto).expect("preferred accel")]
+        );
     }
 
     #[test]
-    fn explicit_accel_has_single_attempt() {
-        assert_eq!(
-            launch_accel_attempts(AccelMode::Tcg).expect("attempts"),
-            vec![AccelMode::Tcg]
-        );
+    fn explicit_supported_accel_has_single_attempt() {
+        let accel = if cfg!(target_os = "macos") {
+            AccelMode::Hvf
+        } else if cfg!(target_os = "linux") && std::path::Path::new("/dev/kvm").exists() {
+            AccelMode::Kvm
+        } else {
+            return;
+        };
+        assert_eq!(launch_accel_attempts(accel).expect("attempts"), vec![accel]);
+    }
+
+    #[test]
+    fn explicit_kvm_requires_dev_kvm() {
+        let err = resolve_accel_for_env(AccelMode::Kvm, "linux", false).expect_err("should fail");
+        assert_eq!(err.to_string(), missing_kvm_error_message());
+        assert!(err.to_string().contains("/dev/kvm"));
+        assert!(err.to_string().contains("fall back to TCG"));
+    }
+
+    #[test]
+    fn auto_requires_kvm_on_linux_without_dev_kvm() {
+        let err = resolve_accel_for_env(AccelMode::Auto, "linux", false).expect_err("should fail");
+        assert_eq!(err.to_string(), missing_kvm_error_message());
+    }
+
+    #[test]
+    fn explicit_tcg_is_disabled() {
+        let err = resolve_accel_for_env(AccelMode::Tcg, "linux", true).expect_err("should fail");
+        assert_eq!(err.to_string(), tcg_disabled_error_message());
+        assert!(err.to_string().contains("TCG acceleration is disabled"));
     }
 }

@@ -109,6 +109,7 @@ If the managed include is installed, `hardpass create` and `hardpass delete` kee
 - `qemu-system-x86_64` or `qemu-system-aarch64`
 - `ssh`
 - `ssh-keygen`
+- Linux hosts need `/dev/kvm`; Hardpass does not fall back to TCG
 - AArch64 hosts also need discoverable UEFI firmware for QEMU
 
 Run `hardpass doctor` to confirm the local environment before creating a VM.
@@ -132,3 +133,13 @@ The real-QEMU integration smoke test is opt-in:
 ```bash
 HARDPASS_REAL_QEMU_TEST=1 cargo test --test library_api_smoke -- --ignored
 ```
+
+The heavier GitHub Actions e2e test is also opt-in locally on Linux hosts:
+
+```bash
+HARDPASS_REAL_QEMU_TEST=1 cargo test --test e2e_vm_stress -- --ignored --nocapture
+```
+
+In GitHub Actions, the e2e workflow requires `/dev/kvm` and intentionally fails instead of falling back to TCG.
+
+Set `HARDPASS_E2E_PROFILE=stress` to run the 2-VM profile locally.
